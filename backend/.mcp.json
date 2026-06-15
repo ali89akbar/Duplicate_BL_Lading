@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "jetro": {
+      "type": "stdio",
+      "command": "C:\\Users\\933448\\.jetro\\runtime\\node-win32-x64.exe",
+      "args": [
+        "C:\\Users\\933448\\.jetro\\mcp-server\\index.js"
+      ],
+      "env": {
+        "JET_WORKSPACE": "c:\\Users\\933448\\Downloads\\OCR_System_Final (1)\\OCR_System_Final\\backend",
+        "JET_API_URL": "https://api.jetro.ai",
+        "PATH": "C:\\Users\\933448\\.jetro\\runtime;C:\\ProgramData\\Oracle\\Java\\javapath;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\cursor\\resources\\app\\bin;C:\\Program Files\\Git\\cmd;%NVM_HOME%;%NVM_SYMLINK%;C:\\Program Files\\nodejs\\;C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\Program Files\\dotnet\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python312\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python313\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python310\\Scripts\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python310\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Python314\\;C:\\Users\\933448\\AppData\\Local\\Programs\\Python\\Launcher\\;C:\\Users\\933448\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\933448\\AppData\\Local\\Programs\\Microsoft VS Code\\bin;C:\\Users\\933448\\AppData\\Local\\Programs\\Git\\cmd;C:\\Users\\933448\\AppData\\Roaming\\npm;C:\\Users\\933448\\AppData\\Local\\Programs\\Antigravity\\bin"
+      }
+    }
+  }
+}

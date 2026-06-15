@@ -1,0 +1,50 @@
+{
+    "admin@bank.com": {
+        "id": "USR-001",
+        "email": "admin@bank.com",
+        "name": "System Administrator",
+        "role": "admin",
+        "department": "IT Operations",
+        "password": "Admin@123"
+    },
+    "remittance.officer@bank.com": {
+        "id": "USR-002",
+        "email": "remittance.officer@bank.com",
+        "name": "Remittance Officer",
+        "role": "officer",
+        "department": "Outward Remittance",
+        "password": "Officer@123"
+    },
+    "trade.ops@bank.com": {
+        "id": "USR-003",
+        "email": "trade.ops@bank.com",
+        "name": "Trade Operations",
+        "role": "officer",
+        "department": "Trade Finance",
+        "password": "Trade@123"
+    },
+    "supervisor@bank.com": {
+        "id": "USR-004",
+        "email": "supervisor@bank.com",
+        "name": "Operations Supervisor",
+        "role": "supervisor",
+        "department": "Outward Remittance",
+        "password": "Super@123"
+    },
+    "ops.team@bank.com": {
+        "id": "USR-005",
+        "email": "ops.team@bank.com",
+        "name": "Ops Team",
+        "role": "officer",
+        "department": "Operations",
+        "password": "Ops@12345"
+    },
+    "ali59.aa96@gmail.com": {
+        "id": "USR-D70A5A",
+        "email": "ali59.aa96@gmail.com",
+        "name": "Ali",
+        "role": "officer",
+        "department": "Operations",
+        "password": "ali123@@"
+    }
+}
