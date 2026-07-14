@@ -27,6 +27,9 @@ class Document(Base):
     status = Column(String(50), default='cleared')
     attachments = Column(JSON, default=list)
     uploaded_by = Column(String(100))
+    hold_since = Column(DateTime, nullable=True)
+    comments = Column(Text, nullable=True)
+    is_partial = Column(Boolean, default=False)
     
     # Reference fields
     screening_date = Column(Date, nullable=True)

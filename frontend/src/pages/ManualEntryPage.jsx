@@ -12,6 +12,7 @@ export function ManualEntryPage({ user }) {
   const [loading, setLoading] = useState(false);
   const [resultData, setResultData] = useState(null);
   const [history, setHistory] = useState([]);
+  const [comments, setComments] = useState('');
   let nextId = 1;
 
   useEffect(() => { loadHistory(); }, []);
@@ -53,6 +54,7 @@ export function ManualEntryPage({ user }) {
     setBlGroups([{ id: Date.now(), product: 'BL', bl_number: '', is_master: true, pendingFiles: [] }]);
     setErrors({});
     setResultData(null);
+    setComments('');
   };
 
   const handleExcelImport = (e) => {
@@ -114,7 +116,7 @@ export function ManualEntryPage({ user }) {
     reader.readAsBinaryString(file);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (action) => {
     setErrors({});
     let hasErr = false;
     const newErrs = {};
@@ -141,7 +143,9 @@ export function ManualEntryPage({ user }) {
     
     const { data, status } = await POST('/manual/submit_group', {
       ref: { ...refFields, amount: parseFloat(refFields.amount) || 0 },
-      bls: blList
+      bls: blList,
+      action: action,
+      comments: comments
     });
 
     if (!data) {
@@ -282,9 +286,23 @@ export function ManualEntryPage({ user }) {
         </div>
       </div>
 
-      <div style={{ padding: '0 18px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-        <button className="btn btn-p" onClick={handleSubmit} disabled={loading}>
-          {loading ? <Spinner /> : 'Submit All BLs'}
+      <div style={{ padding: '10px 18px' }}>
+        <label className="fl" style={{ fontSize: '11px', marginBottom: '4px' }}>Internal Comments</label>
+        <textarea 
+          className="fi" 
+          placeholder="Enter any comments for this group..." 
+          style={{ width: '100%', minHeight: '60px', padding: '8px' }}
+          value={comments}
+          onChange={(e) => setComments(e.target.value)}
+        />
+      </div>
+
+      <div style={{ padding: '10px 18px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+        <button className="btn" style={{ background: '#f59e0b', color: '#fff' }} onClick={() => handleSubmit('hold')} disabled={loading}>
+          {loading ? <Spinner /> : 'Save as Hold'}
+        </button>
+        <button className="btn btn-p" onClick={() => handleSubmit('clear')} disabled={loading}>
+          {loading ? <Spinner /> : 'Submit for Clearance'}
         </button>
         <button className="btn btn-g" onClick={clearForm}>Clear Form</button>
       </div>

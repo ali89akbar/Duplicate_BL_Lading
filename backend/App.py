@@ -226,6 +226,14 @@ def _clean_date(val):
     if m: return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
     return val
 
+def _calendar_days_since(iso_str):
+    if not iso_str: return 0
+    try:
+        past = datetime.fromisoformat(str(iso_str))
+        return (datetime.now() - past).days
+    except:
+        return 0
+
 def _is_editable(doc):
     """
     Editable if:
@@ -237,7 +245,7 @@ def _is_editable(doc):
     if doc.get("status") in ("duplicate_blocked", "rejected"):
         return False
     live = compute_status(doc)
-    if live in ("revalidation_required", "reclearance_requested"):  # ← add reclearance_requested
+    if live in ("revalidation_required", "reclearance_requested", "hold"):  # ← add reclearance_requested, hold
         return True
    
     try:
@@ -486,7 +494,7 @@ def _log_dup(doc_id, fields, dup, user):
 #  stored mid-loop. Multiple BLs under one reference = a valid batch,
 #  not a revalidate condition.
 # ═══════════════════════════════════════════════════════
-def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename=""):
+def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename="", action="clear", comments=""):
     """
     Two-phase processing for a group of BLs sharing one portal_ref_no.
 
@@ -540,6 +548,16 @@ def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename=""):
 
         sub_id = f"MAN-{uuid.uuid4().hex[:8].upper()}"
         doc    = _build_doc(sub_id, ref_fields, bl_fields, dup, submitted_by, source, filename)
+        
+        # Apply hold action
+        if action == "hold" and doc["status"] not in ("duplicate_blocked", "rejected"):
+            doc["status"] = "hold"
+            doc["hold_since"] = _now()
+        if comments:
+            doc["comments"] = comments
+            
+        doc["current_status"] = compute_status(doc)
+            
         store.documents[sub_id] = doc
         _save_doc_to_db(doc)
 
@@ -585,6 +603,8 @@ def submit_group():
     body         = request.get_json(force=True) or {}
     ref_fields   = body.get("ref", {})
     bl_list      = body.get("bls", [])
+    action       = body.get("action", "clear")
+    comments     = body.get("comments", "")
     submitted_by = user["email"]
 
     ref_errors = _validate_ref(ref_fields)
@@ -601,7 +621,7 @@ def submit_group():
         if len(masters) == len(bl_list):
             return jsonify({"error": "Not all BLs can be Master B/L."}), 422
 
-    results, any_error = _process_bl_group(ref_fields, bl_list, submitted_by, "manual_form")
+    results, any_error = _process_bl_group(ref_fields, bl_list, submitted_by, "manual_form", action=action, comments=comments)
 
     return jsonify({
         "portal_ref_no":  ref_fields.get("portal_ref_no"),
@@ -624,6 +644,8 @@ def manual_submit():
     if err: return err
     body         = request.get_json(force=True) or {}
     submitted_by = user["email"]
+    action       = body.get("action", "clear")
+    comments     = body.get("comments", "")
 
     # ── Detect payload format ────────────────────────────
     if "ref" in body and "bls" in body:
@@ -647,7 +669,7 @@ def manual_submit():
                 return jsonify({"error": "Not all BLs can be Master B/L."}), 422
 
             results, any_error = _process_bl_group(
-                ref_fields, bl_list, submitted_by, "manual_form"
+                ref_fields, bl_list, submitted_by, "manual_form", action=action, comments=comments
             )
             return jsonify({
                 "portal_ref_no":  ref_fields.get("portal_ref_no"),
@@ -688,6 +710,15 @@ def manual_submit():
     dup    = dedup.check_document(check, store)
     sub_id = f"MAN-{uuid.uuid4().hex[:8].upper()}"
     doc    = _build_doc(sub_id, ref_fields, bl_fields, dup, submitted_by, "manual_form")
+    
+    if action == "hold" and doc["status"] not in ("duplicate_blocked", "rejected"):
+        doc["status"] = "hold"
+        doc["hold_since"] = _now()
+    if comments:
+        doc["comments"] = comments
+        
+    doc["current_status"] = compute_status(doc)
+    
     store.documents[sub_id] = doc
     _save_doc_to_db(doc)
 
@@ -724,6 +755,68 @@ def manual_submit():
         "dr_ccy":         ref_fields.get("dr_ccy", ""),
         "amount":         ref_fields.get("amount", 0),
     }), (409 if dup["is_duplicate"] else 200)
+
+@app.route("/api/manual/submissions/group_hold", methods=["PATCH"])
+def group_hold():
+    user, err = _require_auth()
+    if err: return err
+    body = request.get_json(force=True) or {}
+    portal_ref_no = body.get("portal_ref_no")
+    if not portal_ref_no:
+        return jsonify({"error": "portal_ref_no required"}), 400
+
+    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == portal_ref_no and d.get("status") not in ("duplicate_blocked", "rejected")]
+    if not docs: return jsonify({"error": "No clearable docs found"}), 404
+
+    now = _now()
+    for doc in docs:
+        doc["status"] = "hold"
+        doc["hold_since"] = now
+        if "comments" in body:
+            doc["comments"] = body["comments"]
+        doc["current_status"] = compute_status(doc)
+        _save_doc_to_db(doc)
+        _audit("document_held", doc["id"], doc.get("product",""), doc.get("is_duplicate",False), doc.get("is_revalidate",False), user["email"], bl_number=doc.get("bl_number",""))
+
+    return jsonify({"message": f"{len(docs)} BL(s) put on hold"})
+
+@app.route("/api/manual/submissions/group_clear_user", methods=["PATCH"])
+def group_clear_user():
+    user, err = _require_auth()
+    if err: return err
+    body = request.get_json(force=True) or {}
+    portal_ref_no = body.get("portal_ref_no")
+    if not portal_ref_no:
+        return jsonify({"error": "portal_ref_no required"}), 400
+
+    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == portal_ref_no and d.get("status") not in ("duplicate_blocked", "rejected")]
+    if not docs: return jsonify({"error": "No docs found"}), 404
+
+    for doc in docs:
+        doc["status"] = "pending_approval"
+        doc["hold_since"] = None
+        if "comments" in body:
+            doc["comments"] = body["comments"]
+        doc["current_status"] = compute_status(doc)
+        _save_doc_to_db(doc)
+        _audit("document_pending_approval", doc["id"], doc.get("product",""), doc.get("is_duplicate",False), doc.get("is_revalidate",False), user["email"], bl_number=doc.get("bl_number",""))
+
+    return jsonify({"message": f"{len(docs)} BL(s) sent for approval"})
+
+@app.route("/api/manual/submissions/group_comment", methods=["PATCH"])
+def group_comment():
+    user, err = _require_auth()
+    if err: return err
+    body = request.get_json(force=True) or {}
+    portal_ref_no = body.get("portal_ref_no")
+    comments = body.get("comments", "")
+    if not portal_ref_no:
+        return jsonify({"error": "portal_ref_no required"}), 400
+    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == portal_ref_no]
+    for doc in docs:
+        doc["comments"] = comments
+        _save_doc_to_db(doc)
+    return jsonify({"message": "Comment updated"})
 
 @app.route("/api/manual/submissions/group_clear", methods=["PATCH"])
 def group_clear():
@@ -907,6 +1000,66 @@ def pending_approvals():
     return jsonify({"total": len(result), "approvals": result})
 
 
+@app.route("/api/admin/hold_cases", methods=["GET"])
+def hold_cases():
+    user, err = _require_auth()
+    if err: return err
+
+    docs = list(store.documents.values())
+    hold_docs = [d for d in docs if d.get("status") == "hold"]
+    if user.get("role") not in ("admin", "supervisor"):
+        hold_docs = [d for d in hold_docs if d.get("uploaded_by") == user["email"]]
+
+    groups = {}
+    for d in hold_docs:
+        ref = d.get("portal_ref_no", "—")
+        if ref not in groups:
+            groups[ref] = {
+                "portal_ref_no": ref,
+                "uploaded_by": d.get("uploaded_by"),
+                "hold_since": d.get("hold_since"),
+                "comments": d.get("comments"),
+                "total_hold_cases": 0,
+                "days_on_hold": _calendar_days_since(d.get("hold_since") or d.get("upload_time")),
+                "bls": []
+            }
+        groups[ref]["total_hold_cases"] += 1
+        groups[ref]["bls"].append({
+            "id": d["id"], "bl_number": d.get("bl_number"),
+            "product": d.get("product"), "status": d.get("status"),
+            "current_status": compute_status(d), "is_master": d.get("is_master", False),
+            "hold_since": d.get("hold_since"),
+            "comments": d.get("comments")
+        })
+
+    result = sorted(groups.values(), key=lambda x: x.get("hold_since",""), reverse=True)
+    return jsonify({"total": len(result), "hold_cases": result})
+
+@app.route("/api/admin/check_hold_reminders", methods=["POST", "GET"])
+def check_hold_reminders():
+    docs = list(store.documents.values())
+    hold_docs = [d for d in docs if d.get("status") == "hold"]
+    
+    import services.notification_service as notif
+    
+    sent = 0
+    notified_refs = set()
+    for d in hold_docs:
+        ref = d.get("portal_ref_no")
+        if ref in notified_refs:
+            continue
+        days_on_hold = _calendar_days_since(d.get("hold_since") or d.get("upload_time"))
+        if days_on_hold >= 7:
+            # Send reminder
+            notif.send_notification(
+                title="Hold Reminder (7+ Days)",
+                message=f"Ref No {ref} has been on hold for {days_on_hold} days. Please update its status.",
+                doc_id=d["id"], notif_type="hold_reminder", severity="MEDIUM"
+            )
+            notified_refs.add(ref)
+            sent += 1
+            
+    return jsonify({"message": f"Sent {sent} hold reminders.", "sent": sent})
 
 @app.route("/api/manual/submissions/group_reject", methods=["PATCH"])
 def group_reject():
@@ -984,6 +1137,65 @@ def reject_submission(doc_id):
     })
 
 
+
+@app.route("/api/manual/submissions/<doc_id>", methods=["DELETE"])
+def delete_submission(doc_id):
+    user, err = _require_auth()
+    if err: return err
+    doc = store.documents.get(doc_id)
+    if not doc: return jsonify({"error": "Not found"}), 404
+
+    if user.get("role") not in ("admin", "supervisor") and doc.get("uploaded_by") != user["email"]:
+        return jsonify({"error": "Forbidden"}), 403
+
+    if not _is_editable(doc) and doc.get("status") != "duplicate_blocked":
+        return jsonify({"error": "Cannot delete locked record"}), 403
+
+    import services.notification_service as notif
+    notif.send_notification(
+        title="Document Deleted",
+        message=f"Ref No: {doc.get('portal_ref_no')} - BL No: {doc.get('bl_number')} was deleted by {user['email']}.",
+        doc_id=doc_id, notif_type="document_deleted", severity="HIGH"
+    )
+
+    _audit("document_deleted", doc_id, doc.get("product", ""), doc.get("is_duplicate", False), doc.get("is_revalidate", False), user["email"], bl_number=doc.get("bl_number", ""))
+    
+    # Remove from store
+    del store.documents[doc_id]
+    
+    # Remove from DB
+    db = SessionLocal()
+    try:
+        from models import Document
+        db_doc = db.query(Document).filter_by(id=doc_id).first()
+        if db_doc:
+            db.delete(db_doc)
+            db.commit()
+    except Exception as e:
+        print("Error deleting from DB:", e)
+    finally:
+        db.close()
+
+    return jsonify({"message": f"Document {doc_id} deleted."})
+
+@app.route("/api/manual/submissions/<doc_id>/mark_partial", methods=["PATCH"])
+def mark_partial(doc_id):
+    user, err = _require_auth()
+    if err: return err
+    doc = store.documents.get(doc_id)
+    if not doc: return jsonify({"error": "Not found"}), 404
+    
+    if user.get("role") not in ("admin", "supervisor") and doc.get("uploaded_by") != user["email"]:
+        return jsonify({"error": "Forbidden"}), 403
+        
+    doc["is_partial"] = True
+    doc["status"] = "hold"
+    doc["hold_since"] = _now()
+    doc["current_status"] = compute_status(doc)
+    
+    _save_doc_to_db(doc)
+    
+    return jsonify({"message": "Marked as partial payment and unblocked.", "doc": doc})
 
 @app.route("/api/manual/submissions/<doc_id>/attachments", methods=["POST"])
 def upload_attachment(doc_id):
@@ -1416,13 +1628,26 @@ def duplicate_documents():
     if user.get("role") not in ("admin", "supervisor"):
         docs = [d for d in docs if d.get("uploaded_by") == user["email"]]
     
-    dups = [d for d in docs if d.get("status") == "duplicate_blocked"]
-    dups.sort(key=lambda d: d.get("upload_time", ""), reverse=True)
+    # Find ref numbers that have at least one duplicate
+    dup_refs = set(d.get("portal_ref_no") for d in docs if d.get("status") == "duplicate_blocked" and d.get("portal_ref_no"))
     
-    for d in dups:
-        d["current_status"] = compute_status(d)
-    
-    return jsonify({"total": len(dups), "documents": dups})
+    groups = {}
+    for d in docs:
+        ref = d.get("portal_ref_no")
+        if ref in dup_refs:
+            if ref not in groups:
+                groups[ref] = {
+                    "portal_ref_no": ref,
+                    "uploaded_by": d.get("uploaded_by"),
+                    "screening_date": d.get("screening_date"),
+                    "upload_time": d.get("upload_time"),
+                    "bls": []
+                }
+            d["current_status"] = compute_status(d)
+            groups[ref]["bls"].append(d)
+            
+    result = sorted(groups.values(), key=lambda x: x.get("upload_time", ""), reverse=True)
+    return jsonify({"total": len(result), "groups": result})
 
 
 print(">>> Calling _load_docs_from_db at module level")

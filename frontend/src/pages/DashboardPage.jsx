@@ -3,6 +3,7 @@ import { GET } from '../utils/api';
 import { StatCard, DataTable } from '../components/UIComponents';
 import { StatusBadge, CurrentStatusBadge, MethBadge, ProgressRow, fmtNum } from '../utils/formatters';
 import { PendingApprovalsPanel } from './PendingApprovalsPanel';
+import { HoldCasesPanel } from './HoldCasesPanel';
 
 
 export function DashboardPage({ user }) {
@@ -37,6 +38,7 @@ export function DashboardPage({ user }) {
   return (
     <>
       {isAdminOrSupervisor && <PendingApprovalsPanel />}
+      <HoldCasesPanel />
       <div className="stats" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
         <StatCard label="Total Scanned" value={metrics.total_documents} colorClass="bl" />
         <StatCard label="Duplicates" value={metrics.total_duplicates} colorClass="rd" />

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { GET, PATCH } from '../utils/api';
 import { StatusBadge, CurrentStatusBadge, fmtNum } from '../utils/formatters';
 import { DataTable } from '../components/UIComponents';
@@ -84,7 +84,11 @@ export function DuplicatesPage() {
   const [error,      setError]      = useState(null);
   const [activePill, setActivePill] = useState('all');
   const [rejecting,  setRejecting]  = useState({});   // { [doc_id]: bool }
-const [dupDocs, setDupDocs] = useState([]);
+  const [dupDocs, setDupDocs] = useState([]);
+  const [expandedGroups, setExpandedGroups] = useState({});
+  
+  const toggleGroup = (ref) => setExpandedGroups(p => ({ ...p, [ref]: !p[ref] }));
+  
   /* ── fetch ── */
 const fetchAll = useCallback(async () => {
   setLoading(true);
@@ -97,7 +101,7 @@ const fetchAll = useCallback(async () => {
     ]);
     setStats(statsRes);
     setLogs(logsRes.logs ?? []);
-    setDupDocs(docsRes?.documents ?? []);  // ← add
+    setDupDocs(docsRes?.groups ?? []);
   } catch (err) {
     setError(err?.message ?? 'Failed to load.');
   } finally {
@@ -120,11 +124,35 @@ async function handleReject(doc_id) {
     await fetchAll();
   } catch (err) {
     alert(`Reject failed: ${err.message}`);
-  } finally {
-    setRejecting(prev => ({ ...prev, [doc_id]: false }));
+    } finally {
+      setRejecting(prev => ({ ...prev, [doc_id]: false }));
+    }
   }
-}
-  /* ── filtered rows ── */
+
+  const handleMarkPartial = async (id) => {
+    if (!window.confirm('Mark this record as a Partial Payment to unblock it?')) return;
+    try {
+      await PATCH(`/manual/submissions/${id}/mark_partial`);
+      fetchAll();
+    } catch (e) {
+      console.error(e);
+      alert('Error marking as partial');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Are you sure you want to delete this BL record?')) return;
+    try {
+      await fetch(`/api/manual/submissions/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      fetchAll();
+    } catch (e) {
+      console.error(e);
+      alert('Error deleting record');
+    }
+  };/* ── filtered rows ── */
   const filtered = logs.filter(l => matchesPill(l, activePill));
 
   const columnHeaders = [
@@ -172,34 +200,82 @@ async function handleReject(doc_id) {
         <StatCard label="High Severity"   value={stats?.high}      colorClass="pu" loading={loading} />
       </div>
       <div className="card" style={{ marginTop: '16px' }}>
-  <div className="card-hd"><span className="card-t">Duplicate Blocked Records</span></div>
-  <div className="card-b">
-    <DataTable
-      columns={['ID', 'BL Number', 'Portal Ref', 'Product', 'CCY', 'Amount', 'Uploaded By', 'Date', 'Action']}
-      rows={dupDocs}
-      renderRow={d => (
-        <tr key={d.id} style={{ background: '#fff5f5' }}>
-          <td><code style={{ fontSize:'11px' }}>{d.id}</code></td>
-          <td className="mono" style={{ fontSize:'11px' }}>{d.bl_number || '—'}</td>
-          <td className="mono" style={{ fontSize:'11px', color:'#b45309' }}>{d.portal_ref_no || '—'}</td>
-          <td>{d.product || '—'}</td>
-          <td className="mono" style={{ fontSize:'11px' }}>{d.dr_ccy || '—'}</td>
-          <td className="mono" style={{ fontSize:'11px' }}>{d.amount?.toLocaleString()}</td>
-          <td style={{ fontSize:'11px' }}>{d.uploaded_by || '—'}</td>
-          <td className="mono" style={{ fontSize:'11px' }}>{d.screening_date || '—'}</td>
-          <td>
-            <button className="btn btn-xs"
-              style={{ background:'#dc2626', color:'#fff' }}
-              onClick={() => handleReject(d.id)}
-              disabled={!!rejecting[d.id]}>
-              {rejecting[d.id] ? 'Rejecting…' : 'Reject'}
-            </button>
-          </td>
-        </tr>
-      )}
-    />
-  </div>
-</div>
+        <div className="card-hd"><span className="card-t">Duplicate Blocked Records <span style={{ fontSize: '11px', color: 'var(--txt3)', fontWeight: 400 }}>({dupDocs.length} groups)</span></span></div>
+        <div className="card-b" style={{ padding: 0 }}>
+          <table style={{ width: '100%', fontSize: '12px' }}>
+            <thead>
+              <tr style={{ color: 'var(--txt3)', borderBottom: '1px solid var(--brd)', textAlign: 'left', background: 'var(--bg)' }}>
+                <th style={{ padding: '8px' }}>Portal Ref No</th>
+                <th>BL Count</th>
+                <th>Uploaded By</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dupDocs.map(g => (
+                <React.Fragment key={g.portal_ref_no}>
+                  <tr style={{ borderBottom: expandedGroups[g.portal_ref_no] ? 'none' : '1px solid var(--brd)', background: '#fff5f5' }}>
+                    <td style={{ padding: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button className="btn btn-xs" onClick={() => toggleGroup(g.portal_ref_no)} style={{ padding: '2px 6px' }}>
+                          {expandedGroups[g.portal_ref_no] ? '▼' : '▶'}
+                        </button>
+                        <code style={{ fontSize: '12px', fontWeight: 600, color: '#b45309' }}>{g.portal_ref_no}</code>
+                      </div>
+                    </td>
+                    <td style={{ fontWeight: 500 }}>{g.bls.length} BL(s)</td>
+                    <td style={{ fontSize: '11px' }}>{g.uploaded_by}</td>
+                    <td className="mono" style={{ fontSize: '11px' }}>{g.screening_date}</td>
+                  </tr>
+                  {expandedGroups[g.portal_ref_no] && (
+                    <tr>
+                      <td colSpan="4" style={{ padding: 0 }}>
+                        <div style={{ padding: '10px 10px 10px 40px', borderBottom: '1px solid var(--brd)', background: '#fff' }}>
+                          <table style={{ width: '100%', fontSize: '11px' }}>
+                            <thead>
+                              <tr style={{ color: 'var(--txt3)' }}>
+                                <th style={{ textAlign: 'left', paddingBottom: '4px' }}>ID</th>
+                                <th style={{ textAlign: 'left' }}>BL Number</th>
+                                <th style={{ textAlign: 'left' }}>Product</th>
+                                <th style={{ textAlign: 'left' }}>Status</th>
+                                <th style={{ textAlign: 'left' }}>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.bls.map(d => (
+                                <tr key={d.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                                  <td style={{ padding: '6px 0' }}><code style={{ background: 'var(--bg)', padding: '2px 4px', borderRadius: '4px' }}>{d.id}</code></td>
+                                  <td className="mono">{d.bl_number} {d.is_master && <span style={{ color: '#d97706' }}>(Master)</span>}</td>
+                                  <td>{d.product}</td>
+                                  <td><CurrentStatusBadge cs={d.current_status} /></td>
+                                  <td>
+                                    <div style={{ display: 'flex', gap: '4px' }}>
+                                      {d.status === 'duplicate_blocked' && (
+                                        <button className="btn btn-xs" style={{ background: '#3b82f6', color: '#fff' }} onClick={() => handleMarkPartial(d.id)}>Mark Partial</button>
+                                      )}
+                                      <button className="btn btn-xs"
+                                        style={{ background:'#dc2626', color:'#fff' }}
+                                        onClick={() => handleReject(d.id)}
+                                        disabled={!!rejecting[d.id]}>
+                                        {rejecting[d.id] ? 'Rejecting…' : 'Reject'}
+                                      </button>
+                                      <button className="btn btn-xs" style={{ background: '#ef4444', color: '#fff' }} onClick={() => handleDelete(d.id)}>✕ Delete</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
       {/* ── main card ── */}
       <div className="card">
         <div className="card-hd">

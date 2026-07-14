@@ -24,6 +24,8 @@ CYCLE_DAYS = 3
  
 def _current_status(doc: dict) -> str:
     base = doc.get("status", "cleared")
+    if base == "hold":
+        return "hold"
     if base == "duplicate_blocked":
         return "duplicate_blocked"
     if base == "pending_approval":

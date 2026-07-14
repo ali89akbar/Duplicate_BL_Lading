@@ -68,7 +68,7 @@ export function PendingApprovalsPanel() {
                 <td>
                   <div style={{ display:'flex', gap:'4px' }}>
                     <button className="btn btn-xs" style={{ background:'#16a34a', color:'#fff' }}
-                      onClick={() => clear(g.portal_ref_no)}>✓ Clear All</button>
+                      onClick={() => clear(g.portal_ref_no)}>✓ Approve All</button>
                     <button className="btn btn-xs" style={{ background:'#dc2626', color:'#fff' }}
                       onClick={() => setRejectModal({ portal_ref_no: g.portal_ref_no, reason: '' })}>
                       ✗ Reject

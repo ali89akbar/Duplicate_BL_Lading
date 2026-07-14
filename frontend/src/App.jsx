@@ -13,6 +13,7 @@ import { AlertsPage } from './pages/AlertsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { SearchPage } from './pages/SearchPage';
+import { HoldCasesPage } from './pages/HoldCasesPage';
 
 const PAGES = {
   dashboard: ['Dashboard', 'Real-time overview'],
@@ -26,6 +27,7 @@ const PAGES = {
   search:    ['Search', 'Full-text search'],
   users:     ['User Management', 'Manage system users and roles'],
   tat:       ['Employee TAT', 'Date-wise records per employee'],
+  holdcases: ['Hold Cases', 'Manage records on hold'],
 };
 
 export default function App() {
@@ -37,7 +39,7 @@ export default function App() {
   useEffect(() => {
     if (authUser && activePage !== 'dashboard') {
       const isAdmin = authUser.role === 'admin' || authUser.role === 'supervisor';
-      const allowed = ['dashboard', 'manual', 'search', 'documents', 'alerts'];
+      const allowed = ['dashboard', 'manual', 'search', 'documents', 'alerts', 'holdcases'];
       const adminAllowed = [...allowed, 'excel', 'duplicates', 'reports', 'audit', 'users', 'tat'];
       if (!isAdmin && !allowed.includes(activePage)) {
         setActivePage('dashboard');
@@ -82,6 +84,7 @@ export default function App() {
           {activePage === 'reports' && <div className="page on"><ReportsPage /></div>}
           {activePage === 'audit' && <div className="page on"><AuditLogPage /></div>}
           {activePage === 'search' && <div className="page on"><SearchPage /></div>}
+          {activePage === 'holdcases' && <div className="page on"><HoldCasesPage /></div>}
         </div>
       </div>
     </>

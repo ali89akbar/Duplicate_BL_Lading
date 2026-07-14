@@ -9,6 +9,7 @@ export function Sidebar({ activePage, setActivePage, dupCount, notifCount, user 
     //{ id: 'excel', label: 'Excel Bulk Upload', icon: '📋', group: 'core' },
     { id: 'documents', label: 'All Records', icon: '📄', group: 'data' },
     { id: 'duplicates', label: 'Duplicates & Revalidate', icon: '🔍', badge: dupCount, group: 'data' },
+    { id: 'holdcases', label: 'Hold Cases', icon: '⏸', group: 'data' },
     { id: 'alerts', label: 'Alerts', icon: '🔔', badge: notifCount, group: 'data' },
     { id: 'reports', label: 'MIS Reports', icon: '📊', group: 'data' },
     { id: 'audit', label: 'Audit Log', icon: '🕒', group: 'data' },
@@ -17,7 +18,7 @@ export function Sidebar({ activePage, setActivePage, dupCount, notifCount, user 
 
   if (!isAdmin) {
     // Regular users only see specific pages
-    const allowed = ['dashboard', 'manual', 'search', 'documents', 'alerts'];
+    const allowed = ['dashboard', 'manual', 'search', 'documents', 'alerts', 'holdcases'];
     navItems = navItems.filter(item => allowed.includes(item.id));
   } else {
     navItems = navItems.filter(item => item.id !== 'manual');
