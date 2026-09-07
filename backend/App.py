@@ -1,14 +1,22 @@
-import uuid, os, sys, base64
+import uuid, os, sys, base64, hashlib, mimetypes
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,10.224.118.151"
+os.environ["no_proxy"] = "localhost,127.0.0.1,0.0.0.0,10.224.118.151"
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response, send_from_directory
 
-app = Flask(__name__)
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist")
+app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
+app.url_map.strict_slashes = False
+
+ATTACHMENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "attachments")
+os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from services.store import store, make_expires_at, compute_status
 import services.duplicate_engine as dedup
 import services.notification_service as notif
+import services.email_service as email_svc
 import services.Authservice as auth_svc
 from db import SessionLocal
 from models import AuditLog, Notification, Document as DocModel, DuplicateLog as DupLogModel
@@ -25,11 +33,20 @@ def _options(_): return jsonify({}), 200
 
 def _load_docs_from_db():
     """Load all documents from DB into in-memory store on startup."""
-    print(">>> LOADING DOCS FROM DB...")  # ← add at very top
+    print(">>> LOADING DOCS FROM DB...")
     db = SessionLocal()
     try:
+        # Migrate legacy revalidation_required statuses in DB
+        try:
+            db.query(DocModel).filter(DocModel.status == 'revalidation_required').update({DocModel.status: 'revalidated'})
+            db.commit()
+        except Exception:
+            db.rollback()
+
         rows = db.query(DocModel).all()
+        existing_ids = set()
         for row in rows:
+            existing_ids.add(row.id)
             doc = {
                 "id":             row.id,
                 "source":         row.source,
@@ -56,13 +73,11 @@ def _load_docs_from_db():
                 "rejected_by":    getattr(row, 'rejected_by', None),
                 "rejected_at":    getattr(row, 'rejected_at', None),
                 "reject_reason":  getattr(row, 'reject_reason', None),
-                "cleared_by":               getattr(row, 'cleared_by', None),
                 "reclearance_requested_at": row.reclearance_requested_at.isoformat() if row.reclearance_requested_at else None,
                 "reclearance_requested_by": getattr(row, 'reclearance_requested_by', None),
                 "last_edited_by":           getattr(row, 'last_edited_by', None),
                 "last_edited_at":           row.last_edited_at.isoformat() if row.last_edited_at else None,
             }
-            print(f">>> Found {len(rows)} rows in DB")
             doc["current_status"] = compute_status(doc)
             doc["is_editable"]    = _is_editable(doc)
             store.documents[row.id] = doc
@@ -77,7 +92,55 @@ def _load_docs_from_db():
                     "product":        row.product or "",
                 }
                 dedup.store_bl(row.id, check, store)
-        print(f"  Loaded {len(rows)} documents from DB into memory store.")
+
+        # Sync initial seed documents into DB if missing
+        for doc_id, doc in list(store.documents.items()):
+            if doc_id not in existing_ids and isinstance(doc, dict):
+                _save_doc_to_db(doc)
+
+        # Enforce Reference Group status cascade across all loaded documents
+        ref_groups = {}
+        for d in store.documents.values():
+            ref = str(d.get("portal_ref_no") or d.get("reference_group") or d.get("fields", {}).get("portal_ref_no") or "").strip().upper()
+            if ref:
+                ref_groups.setdefault(ref, []).append(d)
+
+        for ref, g_docs in ref_groups.items():
+            has_user_cleared = any(d.get("status") == "cleared" and not d.get("is_duplicate") for d in g_docs)
+            if has_user_cleared:
+                for d in g_docs:
+                    d["is_duplicate"] = False
+                    d["is_revalidate"] = False
+                    d["status"] = "cleared"
+                    d["current_status"] = "cleared"
+                    d["duplicate_info"] = None
+                continue
+
+            dup_doc = next((d for d in g_docs if d.get("is_duplicate") or d.get("status") == "duplicate_blocked"), None)
+            reval_doc = next((d for d in g_docs if d.get("is_revalidate") or d.get("status") == "revalidate"), None)
+            hold_doc = next((d for d in g_docs if d.get("status") == "hold"), None)
+
+            if dup_doc:
+                dup_info = dup_doc.get("duplicate_info") or {}
+                for d in g_docs:
+                    d["is_duplicate"] = True
+                    d["is_revalidate"] = False
+                    d["status"] = "duplicate_blocked"
+                    d["current_status"] = "duplicate_blocked"
+                    if not d.get("duplicate_info"):
+                        d["duplicate_info"] = dup_info
+            elif hold_doc:
+                for d in g_docs:
+                    d["status"] = "hold"
+                    d["current_status"] = "hold"
+            elif reval_doc:
+                for d in g_docs:
+                    d["is_revalidate"] = True
+                    d["is_duplicate"] = False
+                    d["status"] = "revalidate"
+                    d["current_status"] = "revalidated"
+
+        print(f"  Loaded {len(store.documents)} documents into memory store and DB.")
     except Exception as e:
         print(f"  Failed to load documents from DB: {e}")
         import traceback; traceback.print_exc()
@@ -91,24 +154,43 @@ def _load_docs_from_db():
 
 def _get_token():
     a = request.headers.get("Authorization", "")
-    return a[7:].strip() if a.startswith("Bearer ") else None
+    if a.startswith("Bearer "):
+        return a[7:].strip()
+    return request.args.get("token") or None
 
 def _require_auth():
     user = auth_svc.get_user_from_token(_get_token() or "")
     if not user:
         return None, (jsonify({"error": "Unauthorized. Please log in."}), 401)
-    return user, None
+    if isinstance(user, dict):
+        return user, None
+    return {
+        "id": getattr(user, "id", None),
+        "email": getattr(user, "email", ""),
+        "name": getattr(user, "name", ""),
+        "role": getattr(user, "role", ""),
+        "department": getattr(user, "department", "")
+    }, None
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
-    b = request.get_json(force=True) or {}
-    token, result = auth_svc.login(
-        b.get("email", "").strip().lower(),
-        b.get("password", "")
-    )
-    if token is None:
-        return jsonify({"error": result}), 401
-    return jsonify({"token": token, "user": result, "message": f"Welcome, {result['name']}!"})
+    try:
+        b = request.get_json(force=True, silent=True) or {}
+        email = str(b.get("email") or "").strip().lower()
+        password = str(b.get("password") or "")
+        
+        token, result = auth_svc.login(email, password)
+        if token is None:
+            return jsonify({"error": result or "Invalid email or password"}), 401
+        
+        return jsonify({
+            "token": token, 
+            "user": result, 
+            "message": f"Welcome, {result.get('name', 'User')}!"
+        })
+    except Exception as e:
+        print("Error in /api/auth/login:", e)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -152,6 +234,32 @@ def admin_users():
     if not success:
         return jsonify({"error": result}), 400
     return jsonify({"user": result, "message": "User created successfully."})
+
+@app.route("/api/admin/users/<user_id>", methods=["PATCH", "DELETE"])
+def admin_user_detail(user_id):
+    user, err = _require_auth()
+    if err: return err
+    if user.get("role") != "admin":
+        return jsonify({"error": "Forbidden"}), 403
+
+    if request.method == "DELETE":
+        success, msg = auth_svc.delete_user(user_id)
+        if not success:
+            return jsonify({"error": msg}), 400
+        return jsonify({"message": msg})
+
+    # PATCH — edit user / reset password
+    b = request.get_json(force=True) or {}
+    success, result = auth_svc.update_user(
+        user_id=user_id,
+        name=b.get("name"),
+        role=b.get("role"),
+        department=b.get("department"),
+        password=b.get("password")
+    )
+    if not success:
+        return jsonify({"error": result}), 400
+    return jsonify({"user": result, "message": "User updated successfully."})
 
 @app.route("/api/admin/tat", methods=["GET"])
 def get_tat():
@@ -212,6 +320,70 @@ def get_tat_detail():
 
 
 # ═══════════════════════════════════════════════════════
+#  ALERT RECIPIENTS & SMTP MANAGEMENT (ADMIN)
+# ═══════════════════════════════════════════════════════
+
+@app.route("/api/admin/alert_recipients", methods=["GET", "POST", "DELETE", "PATCH", "OPTIONS"])
+def alert_recipients_route():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    user, err = _require_auth()
+    if err: return err
+    if user.get("role") not in ("admin", "supervisor"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    if request.method == "GET":
+        recipients = email_svc.get_recipients()
+        cfg = email_svc.get_smtp_config()
+        return jsonify({
+            "smtp_host": cfg["smtp_host"],
+            "smtp_port": cfg["smtp_port"],
+            "sender": cfg["sender_email"],
+            "recipients": recipients
+        })
+    elif request.method == "POST":
+        b = request.get_json(force=True, silent=True) or {}
+        email = b.get("email")
+        added_by = user.get("email") or user.get("name") or "Admin"
+        success, result = email_svc.add_recipient(email, added_by=added_by)
+        if not success:
+            return jsonify({"error": result}), 400
+        return jsonify({"message": "Recipient added successfully", "recipient": result})
+    elif request.method == "PATCH":
+        b = request.get_json(force=True, silent=True) or {}
+        host = b.get("smtp_host")
+        port = b.get("smtp_port")
+        sender = b.get("sender")
+        success, res = email_svc.update_smtp_config(host, port, sender)
+        if not success:
+            return jsonify({"error": res}), 400
+        return jsonify({"message": "SMTP configuration updated", "config": res})
+    elif request.method == "DELETE":
+        email = request.args.get("email") or (request.get_json(force=True, silent=True) or {}).get("email")
+        success, msg = email_svc.remove_recipient(email)
+        if not success:
+            return jsonify({"error": msg}), 400
+        return jsonify({"message": msg})
+
+@app.route("/api/admin/alert_recipients/test", methods=["POST", "GET", "OPTIONS"])
+def test_alert_email():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    user, err = _require_auth()
+    if err: return err
+    if user.get("role") not in ("admin", "supervisor"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    b = request.get_json(force=True, silent=True) or {}
+    test_email = b.get("email") or user.get("email")
+    
+    success, msg = email_svc.test_smtp_connection(test_email)
+    if not success:
+        return jsonify({"error": msg}), 500
+    return jsonify({"message": msg})
+
+
+# ═══════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════
 def _now():   return datetime.now().isoformat()
@@ -226,12 +398,16 @@ def _clean_date(val):
     if m: return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
     return val
 
-def _calendar_days_since(iso_str):
-    if not iso_str: return 0
+def _calendar_days_since(val):
+    if not val: return 0
     try:
-        past = datetime.fromisoformat(str(iso_str))
-        return (datetime.now() - past).days
-    except:
+        if isinstance(val, (datetime, date)):
+            past = val.date() if isinstance(val, datetime) else val
+            return (datetime.now().date() - past).days
+        val_str = str(val).split('T')[0].split(' ')[0].strip()
+        past = datetime.strptime(val_str, "%Y-%m-%d").date()
+        return (datetime.now().date() - past).days
+    except Exception:
         return 0
 
 def _is_editable(doc):
@@ -245,7 +421,7 @@ def _is_editable(doc):
     if doc.get("status") in ("duplicate_blocked", "rejected"):
         return False
     live = compute_status(doc)
-    if live in ("revalidation_required", "reclearance_requested", "hold"):  # ← add reclearance_requested, hold
+    if live in ("revalidation_required", "revalidated", "reclearance_requested", "hold"):  # ← add reclearance_requested, hold, revalidated
         return True
    
     try:
@@ -353,10 +529,20 @@ def _build_doc(sub_id, ref_fields, bl_fields, dup, submitted_by, source, filenam
         status, cleared_at = "revalidate", None
     else:
         # Unique: start cleared, 3-day clock starts now
-        status, cleared_at = "pending_approval", None
+        status, cleared_at = "cleared", ts
 
     expires_at = make_expires_at(ts)
     merged = {**ref_fields, **bl_fields}
+
+    dup_info = None
+    if is_dup or is_rev:
+        dup_info = dict(dup)
+        orig = store.documents.get(dup.get("original_doc_id")) if dup.get("original_doc_id") else None
+        if orig:
+            dup_info["original_portal_ref"] = orig.get("portal_ref_no")
+            dup_info["original_bl_number"] = orig.get("bl_number")
+        elif dup.get("matched_values", {}).get("portal_ref_no"):
+            dup_info["original_portal_ref"] = dup.get("matched_values", {}).get("portal_ref_no")
 
     doc = {
         "id": sub_id, "source": source, "filename": filename,
@@ -366,7 +552,7 @@ def _build_doc(sub_id, ref_fields, bl_fields, dup, submitted_by, source, filenam
         "till_date":   expires_at[:10],
         "is_duplicate":   is_dup,
         "is_revalidate":  is_rev,
-        "duplicate_info": dup if (is_dup or is_rev) else None,
+        "duplicate_info": dup_info,
         "status":         status,
         "current_status": compute_status({
             "status": status, "cleared_at": cleared_at,
@@ -524,6 +710,10 @@ def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename="", ac
             "bl_fields": bl_fields, "check": check, "dup": dup,
         })
 
+    # Group-level status determination: if ANY BL is duplicate, entire group is duplicate
+    group_dup_item = next((item["dup"] for item in phase1 if item["phase"] == "ok" and item["dup"].get("is_duplicate")), None)
+    group_reval_item = None if group_dup_item else next((item["dup"] for item in phase1 if item["phase"] == "ok" and item["dup"].get("is_revalidate")), None)
+
     # ── Phase 2: build docs + store ──────────────────────────────
     results, any_error = [], False
     for item in phase1:
@@ -539,20 +729,29 @@ def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename="", ac
                 "field_errors": item["bl_errors"],
                 "is_duplicate":  False,
                 "is_revalidate": False,
+                "email_alert_sent": False
             })
             continue
 
         check  = item["check"]
         dup    = item["dup"]
-        print(f">>> Processing BL: {bl_fields.get('bl_number')} dup={dup['is_duplicate']} rev={dup.get('is_revalidate')}")  # ← add
+
+        if group_dup_item:
+            dup = group_dup_item
+        elif group_reval_item:
+            dup = group_reval_item
 
         sub_id = f"MAN-{uuid.uuid4().hex[:8].upper()}"
         doc    = _build_doc(sub_id, ref_fields, bl_fields, dup, submitted_by, source, filename)
         
-        # Apply hold action
-        if action == "hold" and doc["status"] not in ("duplicate_blocked", "rejected"):
-            doc["status"] = "hold"
-            doc["hold_since"] = _now()
+        # Apply action status if specified and not duplicate/rejected
+        if action in ("hold", "rejected", "revalidation", "hit", "cleared", "revalidate") and doc["status"] not in ("duplicate_blocked", "rejected"):
+            doc["status"] = "revalidate" if action == "revalidation" else action
+            if action == "hold":
+                doc["hold_since"] = _now()
+            if action == "cleared":
+                doc["is_revalidate"] = False
+                doc["is_duplicate"] = False
         if comments:
             doc["comments"] = comments
             
@@ -561,10 +760,8 @@ def _process_bl_group(ref_fields, bl_list, submitted_by, source, filename="", ac
         store.documents[sub_id] = doc
         _save_doc_to_db(doc)
 
-        if not dup["is_duplicate"] and not dup.get("is_revalidate"):
+        if not dup.get("is_duplicate") and not dup.get("is_revalidate"):
             dedup.store_bl(sub_id, check, store)
-
-        print(f">>> Calling _log_dup for {sub_id}")  # ← add
 
         _log_dup(sub_id, check, dup, submitted_by)
         _audit(
@@ -765,7 +962,13 @@ def group_hold():
     if not portal_ref_no:
         return jsonify({"error": "portal_ref_no required"}), 400
 
-    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == portal_ref_no and d.get("status") not in ("duplicate_blocked", "rejected")]
+    target_ref = str(portal_ref_no).strip().upper()
+    docs = [
+        d for d in store.documents.values() 
+        if (str(d.get("portal_ref_no") or "").strip().upper() == target_ref or 
+            str(d.get("reference_group") or "").strip().upper() == target_ref)
+        and d.get("status") != "rejected"
+    ]
     if not docs: return jsonify({"error": "No clearable docs found"}), 404
 
     now = _now()
@@ -786,22 +989,85 @@ def group_clear_user():
     if err: return err
     body = request.get_json(force=True) or {}
     portal_ref_no = body.get("portal_ref_no")
+    comments = str(body.get("comments", "")).strip()
+    attachment_b64 = body.get("attachment_base64", "")
+    attachment_name = body.get("attachment_filename", "clearance_proof.pdf")
+
     if not portal_ref_no:
         return jsonify({"error": "portal_ref_no required"}), 400
 
-    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == portal_ref_no and d.get("status") not in ("duplicate_blocked", "rejected")]
+    target_ref = str(portal_ref_no).strip().upper()
+    docs = [
+        d for d in store.documents.values() 
+        if (str(d.get("portal_ref_no") or "").strip().upper() == target_ref or 
+            str(d.get("reference_group") or "").strip().upper() == target_ref)
+        and d.get("status") != "rejected"
+    ]
     if not docs: return jsonify({"error": "No docs found"}), 404
 
+    is_group_dup = any(d.get("status") == "duplicate_blocked" or d.get("is_duplicate") for d in docs)
+    if is_group_dup:
+        if not comments:
+            return jsonify({"error": "Justification comment is required to clear duplicate records."}), 400
+        if not attachment_b64:
+            return jsonify({"error": "Supporting proof attachment file is MANDATORY to clear duplicate records."}), 400
+
+    # Save justification attachment if uploaded
+    attachment_obj = None
+    if attachment_b64:
+        try:
+            b64_clean = attachment_b64.split(",", 1)[1] if "," in attachment_b64 else attachment_b64
+            missing_padding = len(b64_clean) % 4
+            if missing_padding: b64_clean += '=' * (4 - missing_padding)
+            raw_bytes = base64.b64decode(b64_clean)
+            file_hash = hashlib.sha256(raw_bytes).hexdigest()
+            ext = os.path.splitext(attachment_name)[1].lower() or ".pdf"
+            today_str = datetime.now().strftime("%Y/%m/%d")
+            relative_path = f"{today_str}/{file_hash}{ext}"
+            full_path = os.path.join(ATTACHMENTS_DIR, relative_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "wb") as f:
+                f.write(raw_bytes)
+            attachment_obj = {
+                "id": f"ATT-{uuid.uuid4().hex[:6].upper()}",
+                "filename": attachment_name,
+                "filetype": mimetypes.guess_type(attachment_name)[0] or "application/pdf",
+                "size_bytes": len(raw_bytes),
+                "file_hash": file_hash,
+                "relative_path": relative_path,
+                "uploaded_at": _now(),
+                "uploaded_by": user["email"],
+                "purpose": "duplicate_justification"
+            }
+        except Exception as e:
+            print("Failed to save clearance attachment:", e)
+
     for doc in docs:
-        doc["status"] = "pending_approval"
+        doc["status"] = "cleared"
+        doc["is_duplicate"] = False
+        doc["is_revalidate"] = False
+        doc["duplicate_info"] = None
+        doc["cleared_at"] = _now()
+        doc["cleared_by"] = user["email"]
         doc["hold_since"] = None
-        if "comments" in body:
-            doc["comments"] = body["comments"]
+        if comments:
+            doc["comments"] = comments
+            doc["justification_comment"] = comments
+        if attachment_obj:
+            if not isinstance(doc.get("attachments"), list): doc["attachments"] = []
+            doc["attachments"].append(attachment_obj)
+
         doc["current_status"] = compute_status(doc)
         _save_doc_to_db(doc)
-        _audit("document_pending_approval", doc["id"], doc.get("product",""), doc.get("is_duplicate",False), doc.get("is_revalidate",False), user["email"], bl_number=doc.get("bl_number",""))
+        try:
+            dedup.store_bl(doc["id"], doc.get("fields") or doc, store)
+        except Exception:
+            pass
+        _audit("document_cleared_from_duplicate" if is_group_dup else "document_cleared_by_user",
+               doc["id"], doc.get("product",""), False, False, user["email"],
+               bl_number=doc.get("bl_number",""), portal_ref_no=portal_ref_no)
 
-    return jsonify({"message": f"{len(docs)} BL(s) sent for approval"})
+    return jsonify({"message": f"{len(docs)} BL(s) cleared successfully with justification."})
 
 @app.route("/api/manual/submissions/group_comment", methods=["PATCH"])
 def group_comment():
@@ -817,6 +1083,22 @@ def group_comment():
         doc["comments"] = comments
         _save_doc_to_db(doc)
     return jsonify({"message": "Comment updated"})
+
+@app.route("/api/manual/submissions/group_edit_ref", methods=["PATCH"])
+def group_edit_ref():
+    user, err = _require_auth()
+    if err: return err
+    body = request.get_json(force=True) or {}
+    old_ref_no = body.get("old_ref_no")
+    new_ref_no = body.get("new_ref_no")
+    if not old_ref_no or not new_ref_no:
+        return jsonify({"error": "old_ref_no and new_ref_no required"}), 400
+    docs = [d for d in store.documents.values() if d.get("portal_ref_no") == old_ref_no]
+    for doc in docs:
+        doc["portal_ref_no"] = new_ref_no
+        doc["last_edited_by"] = user["email"]
+        _save_doc_to_db(doc)
+    return jsonify({"message": "Reference number updated"})
 
 @app.route("/api/manual/submissions/group_clear", methods=["PATCH"])
 def group_clear():
@@ -902,6 +1184,7 @@ def edit_submission(doc_id):
     doc["cleared_at"]     = _now()
     doc["status"]         = "cleared"
     doc["current_status"] = compute_status(doc)
+    _save_doc_to_db(doc)
 
     _audit(
         "record_edit", doc_id, doc.get("product", ""),
@@ -936,104 +1219,70 @@ def request_reclearance(doc_id):
     if not doc: return jsonify({"error": "Not found"}), 404
 
     cs = compute_status(doc)
-    if cs != "revalidation_required":
-        return jsonify({"error": "Re-clearance only allowed when status is 3 days passed"}), 400
+    if cs not in ("revalidation_required", "revalidated"):
+        return jsonify({"error": "Re-clearance only allowed when status is revalidated or 3 days passed"}), 400
 
-    doc["status"]         = "reclearance_requested"
-    doc["current_status"] = "reclearance_requested"
+    doc["status"]         = "cleared"
+    doc["current_status"] = "cleared"
+    doc["cleared_at"]     = _now()
     doc["reclearance_requested_at"] = _now()
     doc["reclearance_requested_by"] = user["email"]
-    doc["cleared_at"]     = None  # reset clock
 
     _save_doc_to_db(doc)
-    _audit("reclearance_requested", doc_id, doc.get("product",""),
+    _audit("document_cleared_by_user", doc_id, doc.get("product",""),
            doc.get("is_duplicate",False), doc.get("is_revalidate",False),
            user["email"], bl_number=doc.get("bl_number",""))
 
-    # Notify admins
-    import services.notification_service as notif
-    notif.send_notification(
-        title="Re-clearance Requested",
-        message=f"BL {doc.get('bl_number')} (Ref: {doc.get('portal_ref_no')}) needs re-clearance.",
-        doc_id=doc_id, notif_type="reclearance", severity="MEDIUM"
-    )
-
-    return jsonify({"message": "Re-clearance requested. Awaiting admin approval.", "doc_id": doc_id})
+    return jsonify({"message": "Document re-cleared successfully.", "doc_id": doc_id})
 
 
-# Pending approvals for admin dashboard
-@app.route("/api/admin/pending_approvals", methods=["GET"])
-def pending_approvals():
-    user, err = _require_auth()
-    if err: return err
-    if user.get("role") not in ("admin", "supervisor"):
-        return jsonify({"error": "Forbidden"}), 403
-
-    docs = list(store.documents.values())
-    
-    # Needs approval = never cleared by admin OR reclearance requested
-    needs = [d for d in docs if 
-             (d.get("status") == "pending_approval" and not d.get("cleared_by")) or
-             d.get("status") == "reclearance_requested"]
-
-    groups = {}
-    for d in needs:
-        ref = d.get("portal_ref_no", "—")
-        if ref not in groups:
-            groups[ref] = {
-                "portal_ref_no": ref,
-                "screening_date": d.get("screening_date"),
-                "amount": d.get("amount"),
-                "dr_ccy": d.get("dr_ccy"),
-                "uploaded_by": d.get("uploaded_by"),
-                "upload_time": d.get("upload_time"),
-                "is_reclearance": d.get("status") == "reclearance_requested",
-                "bls": []
-            }
-        groups[ref]["bls"].append({
-            "id": d["id"], "bl_number": d.get("bl_number"),
-            "product": d.get("product"), "status": d.get("status"),
-            "current_status": compute_status(d), "is_master": d.get("is_master", False)
-        })
-
-    result = sorted(groups.values(), key=lambda x: x.get("upload_time",""), reverse=True)
-    return jsonify({"total": len(result), "approvals": result})
 
 
 @app.route("/api/admin/hold_cases", methods=["GET"])
 def hold_cases():
-    user, err = _require_auth()
-    if err: return err
+    try:
+        user, err = _require_auth()
+        if err: return err
 
-    docs = list(store.documents.values())
-    hold_docs = [d for d in docs if d.get("status") == "hold"]
-    if user.get("role") not in ("admin", "supervisor"):
-        hold_docs = [d for d in hold_docs if d.get("uploaded_by") == user["email"]]
+        user_role = user.get("role") if isinstance(user, dict) else getattr(user, "role", "")
+        user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", "")
 
-    groups = {}
-    for d in hold_docs:
-        ref = d.get("portal_ref_no", "—")
-        if ref not in groups:
-            groups[ref] = {
-                "portal_ref_no": ref,
-                "uploaded_by": d.get("uploaded_by"),
-                "hold_since": d.get("hold_since"),
-                "comments": d.get("comments"),
-                "total_hold_cases": 0,
-                "days_on_hold": _calendar_days_since(d.get("hold_since") or d.get("upload_time")),
-                "bls": []
-            }
-        groups[ref]["total_hold_cases"] += 1
-        groups[ref]["bls"].append({
-            "id": d["id"], "bl_number": d.get("bl_number"),
-            "product": d.get("product"), "status": d.get("status"),
-            "current_status": compute_status(d), "is_master": d.get("is_master", False),
-            "hold_since": d.get("hold_since"),
-            "comments": d.get("comments")
-        })
+        docs = list(store.documents.values())
+        hold_docs = [d for d in docs if isinstance(d, dict) and d.get("status") == "hold"]
+        if user_role not in ("admin", "supervisor"):
+            hold_docs = [d for d in hold_docs if d.get("uploaded_by") == user_email]
 
-    result = sorted(groups.values(), key=lambda x: x.get("hold_since",""), reverse=True)
-    return jsonify({"total": len(result), "hold_cases": result})
+        groups = {}
+        for d in hold_docs:
+            ref = d.get("portal_ref_no") or "—"
+            if ref not in groups:
+                groups[ref] = {
+                    "portal_ref_no": ref,
+                    "uploaded_by": d.get("uploaded_by", ""),
+                    "hold_since": d.get("hold_since") or d.get("upload_time") or "",
+                    "screening_date": d.get("screening_date") or "",
+                    "comments": d.get("comments") or "",
+                    "total_hold_cases": 0,
+                    "days_on_hold": _calendar_days_since(d.get("hold_since") or d.get("upload_time")),
+                    "bls": []
+                }
+            groups[ref]["total_hold_cases"] += 1
+            groups[ref]["bls"].append({
+                "id": d.get("id", ""),
+                "bl_number": d.get("bl_number", ""),
+                "product": d.get("product", ""),
+                "status": d.get("status", ""),
+                "current_status": compute_status(d),
+                "is_master": d.get("is_master", False),
+                "hold_since": d.get("hold_since") or "",
+                "comments": d.get("comments") or ""
+            })
+
+        result = sorted(groups.values(), key=lambda x: str(x.get("hold_since") or ""), reverse=True)
+        return jsonify({"total": len(result), "hold_cases": result})
+    except Exception as e:
+        print("Error in /api/admin/hold_cases:", e)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/check_hold_reminders", methods=["POST", "GET"])
 def check_hold_reminders():
@@ -1061,22 +1310,49 @@ def check_hold_reminders():
             
     return jsonify({"message": f"Sent {sent} hold reminders.", "sent": sent})
 
+@app.route("/api/manual/submissions/group_revalidate", methods=["PATCH"])
+def group_revalidate():
+    user, err = _require_auth()
+    if err: return err
+    body = request.get_json(force=True) or {}
+    portal_ref_no = body.get("portal_ref_no")
+    if not portal_ref_no:
+        return jsonify({"error": "portal_ref_no required"}), 400
+
+    target_ref = str(portal_ref_no).strip().upper()
+    docs = [
+        d for d in store.documents.values() 
+        if (str(d.get("portal_ref_no") or "").strip().upper() == target_ref or 
+            str(d.get("reference_group") or "").strip().upper() == target_ref)
+        and d.get("status") != "rejected"
+    ]
+    if not docs: return jsonify({"error": "No docs found"}), 404
+
+    for doc in docs:
+        doc["status"] = "revalidate"
+        doc["is_revalidate"] = True
+        doc["current_status"] = compute_status(doc)
+        _save_doc_to_db(doc)
+        _audit("document_revalidated", doc["id"], doc.get("product",""),
+               doc.get("is_duplicate",False), True,
+               user["email"], bl_number=doc.get("bl_number",""),
+               portal_ref_no=portal_ref_no)
+
+    return jsonify({"message": f"{len(docs)} BL(s) marked for revalidation"})
+
 @app.route("/api/manual/submissions/group_reject", methods=["PATCH"])
 def group_reject():
     user, err = _require_auth()
     if err: return err
-    if user.get("role") not in ("admin", "supervisor"):
-        return jsonify({"error": "Forbidden"}), 403
 
     body = request.get_json(force=True) or {}
     portal_ref_no = body.get("portal_ref_no")
-    reason = body.get("reason", "").strip()
+    reason = body.get("reason", "Duplication found").strip()
     if not portal_ref_no: return jsonify({"error": "portal_ref_no required"}), 400
-    if not reason: return jsonify({"error": "Rejection reason is required"}), 400
 
     docs = [d for d in store.documents.values()
             if d.get("portal_ref_no") == portal_ref_no
-            and d.get("status") not in ("duplicate_blocked", "rejected")]
+            and d.get("status") != "rejected"]
     if not docs: return jsonify({"error": "No docs found"}), 404
 
     for doc in docs:
@@ -1210,30 +1486,124 @@ def upload_attachment(doc_id):
     body = request.get_json(force=True) or {}
     b64   = body.get("file_base64", "")
     fname = body.get("filename", "attachment.png")
-    ftype = body.get("filetype", "image/png")
+    ftype = body.get("filetype", "") or mimetypes.guess_type(fname)[0] or "application/octet-stream"
     if not b64: return jsonify({"error": "No file provided"}), 400
+
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    b64 = b64.strip()
+    missing_padding = len(b64) % 4
+    if missing_padding:
+        b64 += '=' * (4 - missing_padding)
+
+    try:
+        raw_bytes = base64.b64decode(b64)
+    except Exception as e:
+        return jsonify({"error": f"Invalid base64 payload: {str(e)}"}), 400
+
+    file_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+    ext = os.path.splitext(fname)[1].lower()
+    if not ext: ext = ".png"
+
+    today_str = datetime.now().strftime("%Y/%m/%d")
+    relative_path = f"{today_str}/{file_hash}{ext}"
+    full_path = os.path.join(ATTACHMENTS_DIR, relative_path)
+
+    is_deduplicated = False
+    if os.path.exists(full_path):
+        is_deduplicated = True
+    else:
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as f:
+            f.write(raw_bytes)
 
     att = {
         "id": f"ATT-{uuid.uuid4().hex[:6].upper()}",
-        "filename": fname, "filetype": ftype,
-        "size_bytes": len(base64.b64decode(b64 + "==")),
-        "uploaded_at": _now(), "uploaded_by": uploader, "data_b64": b64,
+        "filename": fname,
+        "filetype": ftype,
+        "size_bytes": len(raw_bytes),
+        "file_hash": file_hash,
+        "relative_path": relative_path,
+        "is_deduplicated": is_deduplicated,
+        "uploaded_at": _now(),
+        "uploaded_by": uploader,
     }
+
     if not isinstance(doc.get("attachments"), list): doc["attachments"] = []
     doc["attachments"].append(att)
     doc["current_status"] = "attachment_uploaded"
+    _save_doc_to_db(doc)
 
     _audit(
         "attachment_upload", doc_id, doc.get("product", ""),
         doc.get("is_duplicate", False), doc.get("is_revalidate", False),
         uploader, fname,
-        bl_number=doc.get("bl_number", ""),   # ← BL number in audit
+        bl_number=doc.get("bl_number", ""),
     )
 
-    return jsonify({"doc_id": doc_id, "attachment_id": att["id"],
-                    "current_status": doc["current_status"],
-                    "message": f"Attachment '{fname}' uploaded.",
-                    "attachments_count": len(doc["attachments"])})
+    msg = f"Attachment '{fname}' uploaded (Deduplicated)." if is_deduplicated else f"Attachment '{fname}' uploaded."
+    return jsonify({
+        "doc_id": doc_id,
+        "attachment_id": att["id"],
+        "is_deduplicated": is_deduplicated,
+        "current_status": doc["current_status"],
+        "message": msg,
+        "attachments_count": len(doc["attachments"])
+    })
+
+@app.route("/api/manual/submissions/<doc_id>/attachments/<att_id>/download", methods=["GET"])
+def download_attachment(doc_id, att_id):
+    user, err = _require_auth()
+    if err: return err
+    doc = store.documents.get(doc_id)
+    if not doc: return jsonify({"error": "Document not found"}), 404
+
+    attachments = doc.get("attachments", [])
+    att = next((a for a in attachments if a.get("id") == att_id), None)
+    if not att: return jsonify({"error": "Attachment not found"}), 404
+
+    mime_type = att.get("filetype") or mimetypes.guess_type(att.get("filename", ""))[0] or "application/octet-stream"
+
+    rel_path = att.get("relative_path")
+    if rel_path:
+        full_path = os.path.join(ATTACHMENTS_DIR, rel_path)
+        if os.path.exists(full_path):
+            dir_name = os.path.dirname(full_path)
+            file_name = os.path.basename(full_path)
+            
+            if request.headers.get("X-Nginx-Protected") == "true":
+                response = make_response()
+                response.headers["X-Accel-Redirect"] = f"/protected_files/{rel_path}"
+                response.headers["Content-Type"] = mime_type
+                response.headers["Content-Disposition"] = f'inline; filename="{att.get("filename", file_name)}"'
+                return response
+
+            res = send_from_directory(
+                dir_name, file_name,
+                mimetype=mime_type,
+                download_name=att.get("filename", file_name),
+                as_attachment=False
+            )
+            res.headers["Content-Type"] = mime_type
+            res.headers["Content-Disposition"] = f'inline; filename="{att.get("filename", file_name)}"'
+            return res
+
+    b64 = att.get("data_b64")
+    if b64:
+        if "," in b64:
+            b64 = b64.split(",", 1)[1]
+        b64 = b64.strip()
+        missing_padding = len(b64) % 4
+        if missing_padding:
+            b64 += '=' * (4 - missing_padding)
+        raw_bytes = base64.b64decode(b64)
+        response = make_response(raw_bytes)
+        response.headers['Content-Type'] = mime_type
+        response.headers['Content-Disposition'] = f'inline; filename="{att.get("filename", "attachment")}"'
+        return response
+
+    return jsonify({"error": "File content unavailable"}), 404
 
 @app.route("/api/manual/submissions")
 def list_manual_submissions():
@@ -1341,40 +1711,78 @@ def health():
 
 @app.route("/api/dashboard/metrics")
 def dashboard_metrics():
-    user, err = _require_auth()
-    if err: return err
-    docs  = list(store.documents.values())
-    if user.get("role") not in ("admin", "supervisor"):
-        docs = [d for d in docs if d.get("uploaded_by") == user["email"]]
-    
-    total = len(docs)
-    dups  = [d for d in docs if d.get("is_duplicate")]
-    revals= [d for d in docs if d.get("is_revalidate")]
-    today = _today()
-    td    = [d for d in docs if d.get("upload_time", "").startswith(today)]
-    live  = [compute_status(d) for d in docs]
-    rejected = [d for d in docs if d.get("status") == "rejected"]
-    return jsonify({
-        "total_documents":    total,
-        "total_duplicates":   len(dups),
-        "total_revalidates":  len(revals),
-        "total_rejected":     len(rejected),
-        "unique_documents":   total - len(dups),
-        "today_uploads":      len(td),
-        "unread_alerts":      sum(1 for n in store.notifications if not n.get("read")),
-        "pattern_alerts":     0,
-        "duplicate_rate":     round(len(dups) / max(total, 1) * 100, 1),
-        # Status counts
-        "cleared_count":               live.count("cleared"),
-        "revalidation_required_count": live.count("revalidation_required"),
-        "attachment_uploaded_count":   live.count("attachment_uploaded"),
-        "duplicate_blocked_count":     live.count("duplicate_blocked"),
-        "rejected_count":              sum(1 for d in docs if d.get("status") == "rejected"),
-        # Legacy aliases
-        "pending_count":    live.count("cleared"),
-        "expired_count":    live.count("revalidation_required"),
-        "revalidated_count":live.count("attachment_uploaded"),
-    })
+    try:
+        user, err = _require_auth()
+        if err: return err
+        
+        user_role = user.get("role", "") if isinstance(user, dict) else getattr(user, "role", "")
+        user_email = user.get("email", "") if isinstance(user, dict) else getattr(user, "email", "")
+        
+        all_docs = [d for d in list(store.documents.values()) if isinstance(d, dict)]
+        docs = all_docs if user_role in ("admin", "supervisor") else [d for d in all_docs if d.get("uploaded_by") == user_email]
+        
+        total = len(docs)
+        dups  = [d for d in docs if d.get("is_duplicate")]
+        revals= [d for d in docs if d.get("is_revalidate")]
+        today = _today()
+        td    = [d for d in docs if str(d.get("upload_time") or "").startswith(today)]
+        live  = [compute_status(d) for d in docs]
+        rejected = [d for d in docs if d.get("status") == "rejected"]
+        
+        # Recent scans list (show top 10 recent documents)
+        recent_source = all_docs if user_role in ("admin", "supervisor") else docs
+        sorted_recent = sorted(recent_source, key=lambda x: str(x.get("upload_time") or ""), reverse=True)
+        recent_list = []
+        for d in sorted_recent[:10]:
+            d_copy = dict(d)
+            d_copy["current_status"] = compute_status(d)
+            d_copy["is_editable"] = _is_editable(d)
+            recent_list.append(d_copy)
+
+        logs_list = store.dup_logs
+        dup_stats = {
+            "total": len(logs_list),
+            "exact":           sum(1 for l in logs_list if l.get("duplicate_type") == "EXACT"),
+            "fuzzy":           sum(1 for l in logs_list if l.get("duplicate_type") == "FUZZY"),
+            "revalidate":      sum(1 for l in logs_list if l.get("duplicate_type") == "REVALIDATE"),
+            "pattern":         0,
+            "amount_velocity": sum(1 for l in logs_list if l.get("duplicate_type") == "AMOUNT_VELOCITY")
+        }
+        
+        tat_map = {}
+        for d in all_docs:
+            ub = d.get("uploaded_by") or "unknown"
+            tat_map[ub] = tat_map.get(ub, 0) + 1
+        tat_list = [{"email": k, "count": v} for k, v in tat_map.items()]
+        tat_list.sort(key=lambda x: x["count"], reverse=True)
+
+        return jsonify({
+            "total_documents":    total,
+            "total_duplicates":   len(dups),
+            "total_revalidates":  len(revals),
+            "total_rejected":     len(rejected),
+            "unique_documents":   total - len(dups),
+            "today_uploads":      len(td),
+            "unread_alerts":      sum(1 for n in store.notifications if not n.get("read")),
+            "pattern_alerts":     0,
+            "duplicate_rate":     round(len(dups) / max(total, 1) * 100, 1),
+            # Status counts
+            "cleared_count":               live.count("cleared"),
+            "revalidation_required_count": live.count("revalidation_required") + live.count("revalidated"),
+            "attachment_uploaded_count":   live.count("attachment_uploaded"),
+            "duplicate_blocked_count":     live.count("duplicate_blocked"),
+            "rejected_count":              sum(1 for d in docs if d.get("status") == "rejected"),
+            # Legacy aliases
+            "pending_count":    live.count("cleared"),
+            "expired_count":    live.count("revalidation_required") + live.count("revalidated"),
+            "revalidated_count":live.count("revalidated") + live.count("revalidation_required"),
+            "recent": recent_list,
+            "dup_stats": dup_stats,
+            "tat": tat_list,
+        })
+    except Exception as e:
+        print("Error in /api/dashboard/metrics:", e)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/dashboard/recent")
 def recent():
@@ -1511,17 +1919,46 @@ def report_summary():
     docs  = list(store.documents.values()); total = len(docs)
     dups  = [d for d in docs if d.get("is_duplicate")]
     live  = [compute_status(d) for d in docs]
-    return jsonify({"total_documents": total, "total_duplicates": len(dups),
+    
+    # Daily trend calculation (default 14 days)
+    days  = int(request.args.get("days", 14)); today = datetime.now().date(); daily_data = []
+    for i in range(days-1, -1, -1):
+        day = (today - timedelta(days=i)).isoformat()
+        dd  = [d for d in store.documents.values() if d.get("upload_time", "").startswith(day)]
+        daily_data.append({"date": day, "total": len(dd),
+            "unique":     sum(1 for d in dd if not d.get("is_duplicate")),
+            "duplicates": sum(1 for d in dd if d.get("is_duplicate")),
+            "revalidates":sum(1 for d in dd if d.get("is_revalidate")),
+            "rejected":   sum(1 for d in dd if d.get("status") == "rejected")})
+
+    # Duplicate stats calculation
+    logs = store.dup_logs
+    if user.get("role") not in ("admin", "supervisor"):
+        logs = [l for l in logs if l.get("uploaded_by") == user["email"]]
+    dup_stats_data = {
+        "total": len(logs),
+        "exact":           sum(1 for l in logs if l.get("duplicate_type") == "EXACT"),
+        "fuzzy":           sum(1 for l in logs if l.get("duplicate_type") == "FUZZY"),
+        "revalidate":      sum(1 for l in logs if l.get("duplicate_type") == "REVALIDATE"),
+        "pattern":         0,
+        "amount_velocity": sum(1 for l in logs if l.get("duplicate_type") == "AMOUNT_VELOCITY")
+    }
+
+    return jsonify({
+        "total_documents": total, "total_duplicates": len(dups),
         "total_unique": total - len(dups),
         "duplicate_rate_pct": round(len(dups)/max(total,1)*100, 1),
         "cleared_count":               live.count("cleared"),
-        "revalidation_required_count": live.count("revalidation_required"),
+        "revalidation_required_count": live.count("revalidation_required") + live.count("revalidated"),
         "attachment_uploaded_count":   live.count("attachment_uploaded"),
         "duplicate_blocked_count":     live.count("duplicate_blocked"),
         "rejected_count":              sum(1 for d in docs if d.get("status") == "rejected"),
         "pending_count":     live.count("cleared"),
-        "expired_count":     live.count("revalidation_required"),
-        "revalidated_count": live.count("attachment_uploaded")})
+        "expired_count":     live.count("revalidation_required") + live.count("revalidated"),
+        "revalidated_count": live.count("revalidated") + live.count("revalidation_required"),
+        "daily": {"days": days, "data": daily_data},
+        "dup_stats": dup_stats_data
+    })
 
 @app.route("/api/reports/daily")
 def report_daily():
@@ -1555,20 +1992,6 @@ def audit_log():
         return jsonify({"total": total, "logs": formatted})
     finally:
         db.close()
-
-# if __name__ == "__main__":
-#     print("=" * 60)
-#     print("  OCR Duplicate Detection System v2.2")
-#     print("  cleared → (3 cal days) → revalidation_required")
-#     print("  Any edit resets → cleared (cycle repeats)")
-#     print("  Same BL+Ref ≤3 working days = DUPLICATE")
-#     print("  Same BL+Ref >3 working days = REVALIDATE")
-#     print("  Multi-BL batch: checks all before storing (no false REVALIDATE)")
-#     print("  Reject endpoint: PATCH /api/manual/submissions/<id>/reject")
-#     print("  Audit log now includes bl_number field")
-#     print(f"  Docs loaded: {len(store.documents)}")
-#     print("=" * 60)
-#     app.run(host="127.0.0.1", port=5000, debug=False)
 
 
 @app.route("/api/users", methods=["GET", "POST"])
@@ -1647,11 +2070,58 @@ def duplicate_documents():
             groups[ref]["bls"].append(d)
             
     result = sorted(groups.values(), key=lambda x: x.get("upload_time", ""), reverse=True)
-    return jsonify({"total": len(result), "groups": result})
+
+    # Consolidated stats & logs
+    logs = store.dup_logs
+    if user.get("role") not in ("admin", "supervisor"):
+        logs = [l for l in logs if l.get("uploaded_by") == user["email"]]
+    logs_sorted = sorted(logs, key=lambda l: l.get("detected_at", ""), reverse=True)
+    
+    stats_data = {
+        "total": len(logs),
+        "bl":  sum(1 for l in logs if l.get("document_type") == "BL"),
+        "inv": sum(1 for l in logs if l.get("document_type") == "COMMERCIAL INVOICE"),
+        "high":   sum(1 for l in logs if l.get("severity") == "HIGH"),
+        "medium": sum(1 for l in logs if l.get("severity") == "MEDIUM"),
+        "exact":           sum(1 for l in logs if l.get("duplicate_type") == "EXACT"),
+        "fuzzy":           sum(1 for l in logs if l.get("duplicate_type") == "FUZZY"),
+        "revalidate":      sum(1 for l in logs if l.get("duplicate_type") == "REVALIDATE"),
+        "pattern":         0,
+        "amount_velocity": sum(1 for l in logs if l.get("duplicate_type") == "AMOUNT_VELOCITY")
+    }
+
+    return jsonify({
+        "total": len(result),
+        "groups": result,
+        "logs": logs_sorted[:100],
+        "stats": stats_data
+    })
 
 
 print(">>> Calling _load_docs_from_db at module level")
 _load_docs_from_db()
 
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    """Serve React SPA — any non-API route falls through to index.html."""
+    if path.startswith("api/"):
+        return jsonify({"error": "API endpoint not found"}), 404
+    if path and os.path.exists(os.path.join(FRONTEND_DIR, path)):
+        resp = send_from_directory(FRONTEND_DIR, path)
+    else:
+        resp = send_from_directory(FRONTEND_DIR, "index.html")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    port = int(os.environ.get("PORT", 5002))
+    try:
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+    except OSError as e:
+        print(f"\n[ERROR] Could not bind to port {port}: {e}")
+        print(f"Port {port} is already bound by an existing running process or restricted by Windows permissions.")
+        print(f"To free port {port} on Windows PowerShell, run:")
+        print(f"  Stop-Process -Id (Get-NetTCPConnection -LocalPort {port}).OwningProcess -Force\n")

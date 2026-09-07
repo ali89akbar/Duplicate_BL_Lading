@@ -1,4 +1,4 @@
-const API = 'http://127.0.0.1:5000/api';
+export const API = '/api';
 
 function authHeaders() {
   const authToken = localStorage.getItem('ocr_token') || '';
@@ -57,4 +57,19 @@ export async function fileToB64(file) {
     r.onload = e => res(e.target.result.split(',')[1] || '');
     r.readAsDataURL(file);
   });
+}
+
+export async function DELETE(path) {
+  try {
+    const r = await fetch(API + path, { 
+      method: 'DELETE', 
+      headers: authHeaders() 
+    });
+    if (r.status === 401) { 
+      return { data: null, status: 401 }; 
+    }
+    return { data: await r.json(), status: r.status };
+  } catch { 
+    return { data: null, status: 0 }; 
+  }
 }

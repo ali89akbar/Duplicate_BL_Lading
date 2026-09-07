@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { GET, PATCH } from '../utils/api';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faCheck, faBell, faTrophy } from '@fortawesome/free-solid-svg-icons';
+
 
 const FILTER_TABS = [
   { key: 'all',        label: 'All' },
@@ -111,14 +114,14 @@ export function AlertsPage() {
 
       {/* ── Page Header ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-        <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: 700 }}>🔔 Alerts</h1>
+        <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: 700 }}><FontAwesomeIcon icon={faBell} /> Alerts</h1>
         <button
           className="btn btn-g btn-sm"
           onClick={markAllRead}
           disabled={markingAll || unread === 0}
           title="Mark all notifications as read"
         >
-          {markingAll ? 'Marking…' : '✓ Mark All Read'}
+          {markingAll ? 'Marking…' : <><FontAwesomeIcon icon={faCheck} /> Mark All Read</>}
         </button>
       </div>
 
@@ -174,7 +177,7 @@ export function AlertsPage() {
 
       {!loading && !error && visibleAlerts.length === 0 && (
         <div style={{ textAlign: 'center', padding: '64px 0' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🎉</div>
+          <div style={{ fontSize: '3rem', marginBottom: '12px' }}><FontAwesomeIcon icon={faTrophy} /></div>
           <p style={{ fontSize: '1.1rem', fontWeight: 600, margin: '0 0 6px' }}>
             {activeTab === 'unread' ? 'No unread alerts!' : 'No alerts here'}
           </p>

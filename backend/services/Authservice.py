@@ -75,6 +75,50 @@ def get_all_users():
     finally:
         db.close()
 
+def update_user(user_id, name=None, role=None, department=None, password=None):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return False, "User not found."
+        if name is not None:
+            user.name = name
+        if role is not None:
+            user.role = role
+        if department is not None:
+            user.department = department
+        if password and password.strip():
+            user.password = password.strip()
+        db.commit()
+        db.refresh(user)
+        return True, {
+            "id": user.id, "email": user.email, "name": user.name,
+            "role": user.role, "department": user.department
+        }
+    except Exception as e:
+        db.rollback()
+        return False, str(e)
+    finally:
+        db.close()
+
+def delete_user(user_id):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return False, "User not found."
+        tokens_to_remove = [t for t, v in _TOKENS.items() if v.get("user_id") == user_id or v.get("email") == user.email]
+        for t in tokens_to_remove:
+            _TOKENS.pop(t, None)
+        db.delete(user)
+        db.commit()
+        return True, "User deleted successfully."
+    except Exception as e:
+        db.rollback()
+        return False, str(e)
+    finally:
+        db.close()
+
 # ── Active token store: token → {user_id, expires_at} ─────────────────────
 _TOKENS: dict[str, dict] = {}
 TOKEN_TTL_HOURS = 8
@@ -84,9 +128,14 @@ def _make_token(user_id: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 def login(email: str, password: str):
+    if not email or not isinstance(email, str):
+        return None, "Email is required."
+    if not password or not isinstance(password, str):
+        return None, "Password is required."
+        
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email.lower()).first()
+        user = db.query(User).filter(User.email == email.strip().lower()).first()
         if not user or user.password != password:
             return None, "Invalid email or password."
 
@@ -103,7 +152,8 @@ def login(email: str, password: str):
         }
         return token, safe_user
     except Exception as e:
-        return None, f"Database connection error: {str(e)}"
+        print("Login exception:", e)
+        return None, f"Database login error: {str(e)}"
     finally:
         db.close()
 

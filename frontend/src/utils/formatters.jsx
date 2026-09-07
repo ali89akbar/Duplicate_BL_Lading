@@ -1,4 +1,6 @@
 import React from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faExclamationTriangle, faCheck, faBan, faTimesCircle, faPause, faCheckCircle, faCircle, faClock } from '@fortawesome/free-solid-svg-icons';
 
 export function ago(iso) {
   if (!iso) return '—';
@@ -10,6 +12,8 @@ export function ago(iso) {
 }
 
 export function lbl(k) {
+  if (!k) return '—';
+  if (k === 'revalidation_required' || k === 'revalidated') return 'Revalidated';
   return k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
@@ -18,17 +22,24 @@ export function fmtNum(n) {
 }
 
 export function StatusBadge({ status, isReval }) {
-  if (isReval || status === 'revalidate') return <span className="badge b-reval">⚠ Revalidate</span>;
-  if (status === 'validated' || status === 'processed') return <span className="badge b-ok">✓ Unique</span>;
-  if (status === 'duplicate_blocked') return <span className="badge b-err">⛔ Duplicate</span>;
-  return <span className="badge b-neu">{status || '—'}</span>;
+  if (isReval || status === 'revalidate' || status === 'revalidation_required' || status === 'revalidated') return <span className="badge b-reval"><FontAwesomeIcon icon={faExclamationTriangle} /> Revalidate</span>;
+  if (status === 'validated' || status === 'processed' || status === 'cleared') return <span className="badge b-ok"><FontAwesomeIcon icon={faCheck} /> {status === 'cleared' ? 'Cleared' : 'Unique'}</span>;
+  if (status === 'duplicate_blocked') return <span className="badge b-err"><FontAwesomeIcon icon={faBan} /> Duplicate</span>;
+  if (status === 'rejected') return <span className="badge b-err"><FontAwesomeIcon icon={faTimesCircle} /> Rejected</span>;
+  if (status === 'hold') return <span className="badge b-warn"><FontAwesomeIcon icon={faPause} /> Hold</span>;
+  if (status === 'hit') return <span className="badge b-err">Hit</span>;
+  return <span className="badge b-neu">{lbl(status)}</span>;
 }
 
 export function CurrentStatusBadge({ cs }) {
-  if (cs === 'revalidated') return <span className="badge b-att">✅ Revalidated</span>;
-  if (cs === 'expired') return <span className="badge b-exp">🔴 Expired</span>;
-  if (cs === 'pending') return <span className="badge" style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe' }}>🕐 Pending</span>;
-  return <span className="badge b-neu">{cs || '—'}</span>;
+  if (cs === 'revalidated' || cs === 'revalidation_required') return <span className="badge b-att"><FontAwesomeIcon icon={faCheckCircle} /> Revalidated</span>;
+  if (cs === 'expired') return <span className="badge b-exp"><FontAwesomeIcon icon={faCircle} /> Expired</span>;
+  if (cs === 'pending' || cs === 'pending_approval') return <span className="badge" style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe' }}><FontAwesomeIcon icon={faClock} /> Pending</span>;
+  if (cs === 'cleared') return <span className="badge b-ok"><FontAwesomeIcon icon={faCheck} /> Cleared</span>;
+  if (cs === 'rejected') return <span className="badge b-err"><FontAwesomeIcon icon={faTimesCircle} /> Rejected</span>;
+  if (cs === 'hold') return <span className="badge b-warn"><FontAwesomeIcon icon={faPause} /> Hold</span>;
+  if (cs === 'hit') return <span className="badge b-err">Hit</span>;
+  return <span className="badge b-neu">{lbl(cs)}</span>;
 }
 
 export function MethBadge({ m }) {

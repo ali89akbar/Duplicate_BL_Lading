@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { GET } from '../utils/api';
 import { StatusBadge, CurrentStatusBadge, fmtNum } from '../utils/formatters';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faChevronRight } from '@fortawesome/free-solid-svg-icons';
+
 
 function CaseDetailModal({ doc, onClose }) {
   if (!doc) return null;
@@ -182,7 +185,7 @@ export function EmployeeTATPage() {
                         borderBottom: isOpen ? '1px solid var(--bdr)' : 'none',
                       }}
                     >
-                      <span style={{ fontSize: 13, color: isOpen ? 'var(--blue)' : 'var(--txt)', transition: 'transform .15s', display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : 'none' }}>▶</span>
+                      <span style={{ fontSize: 13, color: isOpen ? 'var(--blue)' : 'var(--txt)', transition: 'transform .15s', display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : 'none' }}><FontAwesomeIcon icon={faChevronRight} /></span>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{date}</div>
                       <span style={{ marginLeft: 6, background: 'var(--bg)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '1px 9px', fontSize: 11, fontWeight: 600 }}>
                         {records.length} record{records.length !== 1 ? 's' : ''}

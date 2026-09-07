@@ -30,26 +30,26 @@ def _current_status(doc: dict) -> str:
         return "duplicate_blocked"
     if base == "pending_approval":
         return "pending_approval"
-    if base == "rejected":
-        return "rejected"
+    if base in ("rejected", "hit"):
+        return base
     if base == "reclearance_requested":
         return "reclearance_requested"
-    if base in ("cleared", "validated", "revalidate"):
+    if base == "revalidate" or doc.get("is_revalidate"):
+        return "revalidated"
+    if base in ("cleared", "validated"):
         cleared_at = doc.get("cleared_at")
-        if not cleared_at and base == "revalidate":
-            return "revalidation_required"
         ref_ts  = cleared_at or doc.get("upload_time", "")
         days_in = _calendar_days_since(ref_ts)
         if days_in >= CYCLE_DAYS:
-            return "revalidation_required"
+            return "revalidated"
         if doc.get("attachments"):
             return "attachment_uploaded"
         return "cleared"
-    if base == "revalidation_required":
+    if base in ("revalidation_required", "revalidated"):
         cleared_at = doc.get("cleared_at")
         if cleared_at and _calendar_days_since(cleared_at) < CYCLE_DAYS:
             return "cleared"
-        return "revalidation_required"
+        return "revalidated"
     return base
 
 

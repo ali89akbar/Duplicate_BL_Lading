@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { GET } from '../utils/api';
 import { fmtNum } from '../utils/formatters';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faExclamationTriangle, faCheckCircle, faFileAlt, faChartBar } from '@fortawesome/free-solid-svg-icons';
+
 
 /* ─────────────────────────────────────────────
    Sub-components
@@ -108,15 +111,11 @@ export function ReportsPage() {
       setLoading(true);
       setError(null);
       try {
-        const [summaryRes, dailyRes, dupRes] = await Promise.all([
-          GET('/reports/summary'),
-          GET('/reports/daily?days=14'),
-          GET('/duplicates/stats'),
-        ]);
-        if (!cancelled) {
+        const summaryRes = await GET('/reports/summary');
+        if (!cancelled && summaryRes) {
           setSummary(summaryRes);
-          setDaily(dailyRes);
-          setDupStats(dupRes);
+          if (summaryRes.daily) setDaily(summaryRes.daily);
+          if (summaryRes.dup_stats) setDupStats(summaryRes.dup_stats);
         }
       } catch (err) {
         if (!cancelled) setError(err?.message || 'Failed to load report data.');
@@ -237,25 +236,25 @@ export function ReportsPage() {
           label="Total Scanned"
           value={fmtNum(summary?.total_documents ?? 0)}
           colorClass="stat-blue"
-          icon="📄"
+          icon=<FontAwesomeIcon icon={faFileAlt} />
         />
         <StatCard
           label="Unique Records"
           value={fmtNum(summary?.total_unique ?? 0)}
           colorClass="stat-green"
-          icon="✅"
+          icon=<FontAwesomeIcon icon={faCheckCircle} />
         />
         <StatCard
           label="Total Duplicates"
           value={fmtNum(summary?.total_duplicates ?? 0)}
           colorClass="stat-red"
-          icon="⚠️"
+          icon={<FontAwesomeIcon icon={faExclamationTriangle} />}
         />
         <StatCard
           label="Duplicate Rate"
           value={`${(summary?.duplicate_rate_pct ?? 0).toFixed(1)}%`}
           colorClass="stat-amber"
-          icon="📊"
+          icon=<FontAwesomeIcon icon={faChartBar} />
         />
       </div>
 

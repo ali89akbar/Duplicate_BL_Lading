@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { GET, PATCH } from '../utils/api';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faCheck, faBell } from '@fortawesome/free-solid-svg-icons';
+
 
 export function PendingApprovalsPanel() {
   const [groups, setGroups] = useState([]);
@@ -34,7 +37,7 @@ export function PendingApprovalsPanel() {
       <div className="card" style={{ borderLeft: '3px solid #d97706', marginBottom: '16px' }}>
         <div className="card-hd">
           <div className="card-t">
-            🔔 Pending Approvals
+            <FontAwesomeIcon icon={faBell} /> Pending Approvals
             <span style={{ background:'#dc2626', color:'#fff', borderRadius:'10px', fontSize:'10px', padding:'1px 7px', marginLeft:'8px' }}>{groups.length}</span>
           </div>
         </div>
@@ -68,7 +71,7 @@ export function PendingApprovalsPanel() {
                 <td>
                   <div style={{ display:'flex', gap:'4px' }}>
                     <button className="btn btn-xs" style={{ background:'#16a34a', color:'#fff' }}
-                      onClick={() => clear(g.portal_ref_no)}>✓ Approve All</button>
+                      onClick={() => clear(g.portal_ref_no)}><FontAwesomeIcon icon={faCheck} /> Approve All</button>
                     <button className="btn btn-xs" style={{ background:'#dc2626', color:'#fff' }}
                       onClick={() => setRejectModal({ portal_ref_no: g.portal_ref_no, reason: '' })}>
                       ✗ Reject

@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-09-07T16:45:05.758402",
+  "from": "noreply-ocr-alerts@ubl.com.pk",
+  "to": [
+    "admin@bank.com"
+  ],
+  "subject": "[TEST] UBL OCR System SMTP Configuration Test",
+  "body": "SMTP SERVER TEST  |  2026-09-07 16:45:01\n--------------------------------------------------\nSMTP Host: 10.224.107.53\nSMTP Port: 25\nSender   : noreply-ocr-alerts@ubl.com.pk\nTest To  : admin@bank.com\n--------------------------------------------------\nIf you received this message, the OCR System SMTP integration on 10.224.107.53:25 is working correctly.",
+  "target_host": "10.224.107.53",
+  "target_port": 25,
+  "status": "queued_due_to_timeout",
+  "error": "timed out"
+}

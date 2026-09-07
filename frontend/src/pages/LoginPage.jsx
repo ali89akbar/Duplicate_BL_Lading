@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 
 export function LoginPage() {
   const { doLogin, loading, error } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  useEffect(() => {
+    if (window.location.pathname !== '/' && window.location.pathname !== '') {
+      window.history.replaceState(null, '', '/');
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

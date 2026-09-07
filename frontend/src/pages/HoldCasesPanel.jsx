@@ -1,10 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { GET, PATCH } from '../utils/api';
 import { StatusBadge, CurrentStatusBadge, fmtNum } from '../utils/formatters';
+import { useDebounce } from '../hooks/useDebounce';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faPause, faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons';
+
 
 export function HoldCasesPanel() {
   const [groups, setGroups] = useState([]);
   const [expandedGroups, setExpandedGroups] = useState({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearchQuery = useDebounce(searchQuery, 500);
+  const [misStartDate, setMisStartDate] = useState('');
+  const [misEndDate, setMisEndDate] = useState('');
 
   const load = async () => {
     const r = await GET('/admin/hold_cases');
@@ -17,34 +25,63 @@ export function HoldCasesPanel() {
     setExpandedGroups(prev => ({ ...prev, [ref]: !prev[ref] }));
   };
 
-  if (groups.length === 0) return null;
+  const filteredGroups = groups.filter(g => {
+    if (misStartDate && g.screening_date && g.screening_date < misStartDate) return false;
+    if (misEndDate && g.screening_date && g.screening_date > misEndDate) return false;
+    if (debouncedSearchQuery) {
+      const q = debouncedSearchQuery.toLowerCase();
+      const matchRef = g.portal_ref_no?.toLowerCase().includes(q);
+      const matchBl = g.bls.some(b => b.bl_number.toLowerCase().includes(q));
+      if (!matchRef && !matchBl) return false;
+    }
+    return true;
+  });
+
+  if (groups.length === 0) {
+    return (
+      <div className="card" style={{ padding: '24px', textAlign: 'center', color: 'var(--txt3)' }}>
+        No records currently on hold.
+      </div>
+    );
+  }
 
   return (
-    <div className="card" style={{ borderLeft: '3px solid #b45309', marginBottom: '16px' }}>
-      <div className="card-hd">
-        <div className="card-t">
-          ⏸ Hold Cases
-          <span style={{ background:'#fef3c7', color:'#b45309', borderRadius:'10px', fontSize:'10px', padding:'1px 7px', marginLeft:'8px' }}>{groups.length}</span>
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <label style={{ fontSize: '11px', color: 'var(--txt2)' }}>From:</label>
+          <input type="date" className="fi" style={{ height: '34px' }} value={misStartDate} onChange={e => setMisStartDate(e.target.value)} />
+          <label style={{ fontSize: '11px', color: 'var(--txt2)', marginLeft: '4px' }}>To:</label>
+          <input type="date" className="fi" style={{ height: '34px' }} value={misEndDate} onChange={e => setMisEndDate(e.target.value)} />
         </div>
+        <input className="fi" style={{ width: '220px', height: '34px' }} placeholder="Search Reference, BL..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
       </div>
-      <table style={{ width:'100%', fontSize:'12px' }}>
-        <thead>
-          <tr style={{ color:'var(--txt3)' }}>
-            <th style={{ padding:'6px 8px', textAlign:'left' }}>Ref No / Comment</th>
-            <th>Total Cases</th>
-            <th>Hold Since</th>
-            <th>Days on Hold</th>
-            <th>By</th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map(g => (
+
+      <div className="card" style={{ borderLeft: '3px solid #b45309', marginBottom: '16px' }}>
+        <div className="card-hd">
+          <div className="card-t">
+            <FontAwesomeIcon icon={faPause} /> Hold Cases
+            <span style={{ background:'#fef3c7', color:'#b45309', borderRadius:'10px', fontSize:'10px', padding:'1px 7px', marginLeft:'8px' }}>{filteredGroups.length}</span>
+          </div>
+        </div>
+        <table style={{ width:'100%', fontSize:'12px' }}>
+          <thead>
+            <tr style={{ color:'var(--txt3)' }}>
+              <th style={{ padding:'6px 8px', textAlign:'left' }}>Ref No / Comment</th>
+              <th>Total Cases</th>
+              <th>Hold Since</th>
+              <th>Days on Hold</th>
+              <th>By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredGroups.map(g => (
             <React.Fragment key={g.portal_ref_no}>
               <tr style={{ borderTop:'1px solid var(--brd)', background: expandedGroups[g.portal_ref_no] ? '#fafafa' : 'transparent' }}>
                 <td style={{ padding:'6px 8px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <button className="btn btn-xs" onClick={() => toggleGroup(g.portal_ref_no)} style={{ padding: '2px 6px' }}>
-                      {expandedGroups[g.portal_ref_no] ? '▼' : '▶'}
+                      {expandedGroups[g.portal_ref_no] ? <FontAwesomeIcon icon={faChevronDown} /> : <FontAwesomeIcon icon={faChevronRight} />}
                     </button>
                     <code style={{ fontSize:'11px', fontWeight:600 }}>{g.portal_ref_no}</code>
                   </div>
@@ -91,8 +128,9 @@ export function HoldCasesPanel() {
               )}
             </React.Fragment>
           ))}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

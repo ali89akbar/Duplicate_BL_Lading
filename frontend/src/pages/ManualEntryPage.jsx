@@ -4,12 +4,16 @@ import { DataTable, Spinner } from '../components/UIComponents';
 import { ResultPanel, ErrorPanel } from '../components/ResultPanel';
 import { StatusBadge, CurrentStatusBadge, fmtNum } from '../utils/formatters';
 import * as XLSX from 'xlsx';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faPaperclip, faExclamationTriangle, faFileImport, faStar } from '@fortawesome/free-solid-svg-icons';
+
 
 export function ManualEntryPage({ user }) {
   const [refFields, setRefFields] = useState({ screening_date: '', dr_ccy: 'USD', amount: '', portal_ref_no: '' });
   const [blGroups, setBlGroups] = useState([{ id: 0, product: 'BL', bl_number: '', is_master: true, pendingFiles: [] }]);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
+  const [statusDropdown, setStatusDropdown] = useState('cleared');
   const [resultData, setResultData] = useState(null);
   const [history, setHistory] = useState([]);
   const [comments, setComments] = useState('');
@@ -65,53 +69,87 @@ export function ManualEntryPage({ user }) {
     reader.onload = (evt) => {
       try {
         const bstr = evt.target.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wb = XLSX.read(bstr, { type: 'binary', cellDates: true });
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
         
-        if (data.length < 2) return alert('Excel file is empty or missing data rows.');
+        const data = XLSX.utils.sheet_to_json(ws, { raw: false });
+        if (data.length === 0) return alert('Excel file is empty.');
         
-        // Find column index for "BL / Invoice Number"
-        const headerRow = data[0].map(h => String(h).toLowerCase().trim());
-        const blColIdx = headerRow.findIndex(h => h.includes('bl') || h.includes('invoice') || h === 'bl_number');
+        // Helper to find a key regardless of case/whitespace/symbols
+        const findKey = (row, keywords) => {
+          const keys = Object.keys(row);
+          return keys.find(k => keywords.some(kw => k.toLowerCase().replace(/[^a-z]/g, '') === kw));
+        };
+
+        const firstRow = data[0];
         
-        if (blColIdx === -1) {
-          return alert('Could not find a column containing "BL" or "Invoice" in the header row.');
+        // Extract Reference Fields from the first row
+        const dateKey = findKey(firstRow, ['date']);
+        const ccyKey = findKey(firstRow, ['ccy', 'currency']);
+        const amtKey = findKey(firstRow, ['amount', 'amt']);
+        const refKey = findKey(firstRow, ['ref', 'reference']);
+        const statusKey = findKey(firstRow, ['status']);
+        const companyKey = findKey(firstRow, ['company']);
+        
+        const newRef = { ...refFields };
+        
+        if (dateKey && firstRow[dateKey]) {
+           const dStr = String(firstRow[dateKey]);
+           const dObj = new Date(dStr);
+           if (!isNaN(dObj.getTime())) {
+             newRef.screening_date = dObj.toISOString().split('T')[0];
+           }
+        }
+        if (ccyKey && firstRow[ccyKey]) newRef.dr_ccy = String(firstRow[ccyKey]).toUpperCase().trim();
+        if (amtKey && firstRow[amtKey]) newRef.amount = String(firstRow[amtKey]).replace(/,/g, '').trim();
+        if (refKey && firstRow[refKey]) newRef.portal_ref_no = String(firstRow[refKey]).trim();
+        
+        setRefFields(newRef);
+
+        if (statusKey && firstRow[statusKey]) {
+          const st = String(firstRow[statusKey]).toLowerCase().trim();
+          if (st.includes('hit')) setStatusDropdown('hit');
+          else if (st.includes('hold')) setStatusDropdown('hold');
+          else if (st.includes('rev')) setStatusDropdown('revalidation');
+          else if (st.includes('rej')) setStatusDropdown('rejected');
+          else if (st.includes('clear')) setStatusDropdown('cleared');
         }
 
-        const newBls = [];
-        for (let i = 1; i < data.length; i++) {
-          const val = data[i][blColIdx];
-          if (val) {
-            newBls.push({
-              id: Date.now() + i,
-              product: 'BL',
-              bl_number: String(val).trim(),
-              is_master: false, // Default to false, user will select the master
-              pendingFiles: []
-            });
-          }
-        }
-
-        if (newBls.length > 0) {
-          setBlGroups(prev => {
-            const hasExisting = prev.length > 0 && prev[0].bl_number.trim() !== '';
-            const combined = hasExisting ? [...prev, ...newBls] : newBls;
-            // Ensure at least one master if none are set
-            if (!combined.some(g => g.is_master) && combined.length > 0) {
-              combined[0].is_master = true;
-            }
-            return combined;
-          });
-          alert(`Successfully imported ${newBls.length} BL/Invoice numbers from Excel.`);
+        const blColKey = findKey(firstRow, ['number', 'blnumber', 'invoice']);
+        const productKey = findKey(firstRow, ['blawb', 'product', 'type']);
+        
+        if (!blColKey) {
+          alert('Could not find a column for BL "Number". Only reference fields were populated.');
         } else {
-          alert('No values found in the BL column.');
+          const newBls = [];
+          for (let i = 0; i < data.length; i++) {
+            const row = data[i];
+            const blNum = row[blColKey];
+            if (blNum) {
+               let prod = 'BL';
+               if (productKey && row[productKey]) {
+                 const pstr = String(row[productKey]).toUpperCase().trim();
+                 if (pstr.includes('COMMERCIAL INVOICE') || pstr.includes('INV')) prod = 'COMMERCIAL INVOICE';
+               }
+               newBls.push({
+                 id: Date.now() + i,
+                 product: prod,
+                 bl_number: String(blNum).trim(),
+                 is_master: false,
+                 pendingFiles: []
+               });
+            }
+          }
+          if (newBls.length > 0) {
+            newBls[0].is_master = true;
+            setBlGroups(newBls);
+          }
         }
       } catch (err) {
         alert('Error parsing Excel file: ' + err.message);
       }
-      e.target.value = ''; // Reset file input
+      e.target.value = '';
     };
     reader.readAsBinaryString(file);
   };
@@ -225,7 +263,7 @@ export function ManualEntryPage({ user }) {
         <div className="bl-group-body">
           {blGroups.length > 1 && !blGroups.some(g => g.is_master) && (
             <div style={{ background: '#fef2f2', border: '1px solid #fbb4b4', padding: '9px 14px', borderRadius: 'var(--r)', marginBottom: '14px', fontSize: '11px', color: '#b91818', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              ⚠ You have multiple BLs. At least one must be marked as Master B/L.
+              <FontAwesomeIcon icon={faExclamationTriangle} /> You have multiple BLs. At least one must be marked as Master B/L.
             </div>
           )}
 
@@ -234,7 +272,7 @@ export function ManualEntryPage({ user }) {
               <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>
                 <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', cursor: 'pointer', flexShrink: 0, width: '52px' }}>
                   <input type="checkbox" checked={g.is_master} onChange={e => handleMasterChange(i, e.target.checked)} style={{ width: '18px', height: '18px', accentColor: '#f59e0b', cursor: 'pointer' }} />
-                  <span style={{ fontSize: '9px', fontWeight: 700, color: g.is_master ? '#d97706' : 'var(--txt3)', textAlign: 'center', lineHeight: 1.2 }}>{g.is_master ? '★ Master' : 'Regular'}</span>
+                  <span style={{ fontSize: '9px', fontWeight: 700, color: g.is_master ? '#d97706' : 'var(--txt3)', textAlign: 'center', lineHeight: 1.2 }}>{g.is_master ? <><FontAwesomeIcon icon={faStar} /> Master</> : 'Regular'}</span>
                 </label>
                 <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: g.is_master ? '#f59e0b' : 'var(--bdr2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 700, color: g.is_master ? '#92400e' : 'var(--txt3)', flexShrink: 0 }}>{i + 1}</div>
                 <div style={{ flex: '0 0 180px' }}>
@@ -253,11 +291,11 @@ export function ManualEntryPage({ user }) {
                   <label className="fl" style={{ fontSize: '10px', marginBottom: '3px' }}>Attachment</label>
                   <div className="att-zone" style={{ padding: '7px', marginTop: 0 }}>
                     <input type="file" accept="image/*,.pdf" multiple onChange={e => handleFileChange(i, e.target.files)} />
-                    <div style={{ fontSize: '10.5px', color: 'var(--txt3)' }}>📎 {g.pendingFiles.length > 0 ? `${g.pendingFiles.length} file(s)` : 'Attach'}</div>
+                    <div style={{ fontSize: '10.5px', color: 'var(--txt3)' }}><FontAwesomeIcon icon={faPaperclip} /> {g.pendingFiles.length > 0 ? `${g.pendingFiles.length} file(s)` : 'Attach'}</div>
                   </div>
                   {g.pendingFiles.length > 0 && (
                     <div className="att-list" style={{ marginTop: '4px' }}>
-                      {g.pendingFiles.map((f, fi) => <span key={fi} className="att-chip" style={{ fontSize: '9.5px', padding: '2px 7px' }}>📎 {f.name}</span>)}
+                      {g.pendingFiles.map((f, fi) => <span key={fi} className="att-chip" style={{ fontSize: '9.5px', padding: '2px 7px' }}><FontAwesomeIcon icon={faPaperclip} /> {f.name}</span>)}
                     </div>
                   )}
                 </div>
@@ -274,7 +312,7 @@ export function ManualEntryPage({ user }) {
           {/* Excel Import Button */}
           <div style={{ position: 'relative', overflow: 'hidden', display: 'inline-block' }}>
             <button className="add-bl-btn" style={{ background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0' }}>
-              📥 Import BLs from Excel
+              <FontAwesomeIcon icon={faFileImport} /> Import BLs from Excel
             </button>
             <input 
               type="file" 
@@ -298,17 +336,21 @@ export function ManualEntryPage({ user }) {
       </div>
 
       <div style={{ padding: '10px 18px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-        <button className="btn" style={{ background: '#f59e0b', color: '#fff' }} onClick={() => handleSubmit('hold')} disabled={loading}>
-          {loading ? <Spinner /> : 'Save as Hold'}
-        </button>
-        <button className="btn btn-p" onClick={() => handleSubmit('clear')} disabled={loading}>
-          {loading ? <Spinner /> : 'Submit for Clearance'}
+        <select className="fsel" style={{ width: '150px' }} value={statusDropdown} onChange={e => setStatusDropdown(e.target.value)}>
+          <option value="cleared">Cleared</option>
+          <option value="hold">Hold</option>
+          <option value="hit">Hit</option>
+          <option value="revalidate">Revalidation</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <button className="btn btn-p" onClick={() => handleSubmit(statusDropdown)} disabled={loading}>
+          {loading ? <Spinner /> : 'Submit'}
         </button>
         <button className="btn btn-g" onClick={clearForm}>Clear Form</button>
       </div>
 
       <div style={{ padding: '0 18px' }}>
-        {resultData?.type === 'error' ? <ErrorPanel message={resultData.message} /> : <ResultPanel data={resultData} />}
+        {resultData?.type === 'error' ? <ErrorPanel message={resultData.message} /> : <ResultPanel data={resultData} onRefresh={loadHistory} />}
       </div>
 
       <div className="card" style={{ marginTop: '24px' }}>
@@ -322,7 +364,20 @@ export function ManualEntryPage({ user }) {
               <td>{s.product || '—'}</td>
               <td className="mono" style={{ fontSize: '11.5px' }}>{s.bl_number || '—'}</td>
               <td style={{ textAlign: 'center' }}>{s.is_master ? <span style={{ fontSize: '12px' }}>True</span> : <span style={{ color: 'var(--txt3)', fontSize: '11px' }}>—</span>}</td>
-              <td className="mono" style={{ fontSize: '11px', color: '#b45309' }}>{s.portal_ref_no || '—'}</td>
+              <td className="mono" style={{ fontSize: '11px', color: '#b45309' }}>
+                {s.portal_ref_no || '—'}
+                {(() => {
+                  const origRef = s?.duplicate_info?.original_portal_ref || 
+                                  s?.duplicate_info?.matched_values?.portal_ref_no || 
+                                  s?.duplicate_info?.extra?.original_portal_ref ||
+                                  s?.original_record?.portal_ref_no;
+                  return (s.is_duplicate || s.status === 'duplicate_blocked') && origRef ? (
+                    <div style={{ fontSize: '9.5px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>
+                      Duplicate of {origRef}
+                    </div>
+                  ) : null;
+                })()}
+              </td>
               <td className="mono" style={{ fontSize: '11px' }}>{s.screening_date || '—'}</td>
               <td className="mono" style={{ fontSize: '11px' }}>{s.dr_ccy || '—'}</td>
               <td className="mono" style={{ fontSize: '11.5px' }}>{fmtNum(s.amount)}</td>

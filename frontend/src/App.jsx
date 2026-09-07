@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
+import { GET } from './utils/api';
 import { Sidebar, Topbar } from './components/Navigation';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -13,7 +14,7 @@ import { AlertsPage } from './pages/AlertsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { SearchPage } from './pages/SearchPage';
-import { HoldCasesPage } from './pages/HoldCasesPage';
+import { EmailRecipientsPage } from './pages/EmailRecipientsPage';
 
 const PAGES = {
   dashboard: ['Dashboard', 'Real-time overview'],
@@ -27,7 +28,7 @@ const PAGES = {
   search:    ['Search', 'Full-text search'],
   users:     ['User Management', 'Manage system users and roles'],
   tat:       ['Employee TAT', 'Date-wise records per employee'],
-  holdcases: ['Hold Cases', 'Manage records on hold'],
+  email_recipients: ['Email Alerts', 'SMTP server configuration & recipient distribution list'],
 };
 
 export default function App() {
@@ -37,17 +38,15 @@ export default function App() {
   const [notifCount, setNotifCount] = useState(0);
 
   useEffect(() => {
-    if (authUser && activePage !== 'dashboard') {
-      const isAdmin = authUser.role === 'admin' || authUser.role === 'supervisor';
-      const allowed = ['dashboard', 'manual', 'search', 'documents', 'alerts', 'holdcases'];
-      const adminAllowed = [...allowed, 'excel', 'duplicates', 'reports', 'audit', 'users', 'tat'];
-      if (!isAdmin && !allowed.includes(activePage)) {
-        setActivePage('dashboard');
-      } else if (isAdmin && !adminAllowed.includes(activePage)) {
-        setActivePage('dashboard');
-      }
+    if (isAuthenticated) {
+      GET('/notifications?limit=50').then(res => {
+        if (res?.unread != null) setNotifCount(res.unread);
+      });
+      GET('/duplicates/stats').then(res => {
+        if (res?.total != null) setDupCount(res.total);
+      });
     }
-  }, [activePage, authUser]);
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) {
     return <LoginPage />;
@@ -71,6 +70,7 @@ export default function App() {
           doLogout={doLogout} 
           notifCount={notifCount} 
           user={authUser}
+          onNotifClick={() => setActivePage('alerts')}
         />
         <div className="content">
           {activePage === 'dashboard' && <div className="page on"><DashboardPage user={authUser} /></div>}
@@ -84,7 +84,7 @@ export default function App() {
           {activePage === 'reports' && <div className="page on"><ReportsPage /></div>}
           {activePage === 'audit' && <div className="page on"><AuditLogPage /></div>}
           {activePage === 'search' && <div className="page on"><SearchPage /></div>}
-          {activePage === 'holdcases' && <div className="page on"><HoldCasesPage /></div>}
+          {activePage === 'email_recipients' && <div className="page on"><EmailRecipientsPage /></div>}
         </div>
       </div>
     </>

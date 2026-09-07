@@ -1,0 +1,27 @@
+[
+  {
+    "email": "remittance.supervisor@bank.com",
+    "added_at": "2026-08-28T15:00:00",
+    "added_by": "System"
+  },
+  {
+    "email": "compliance@bank.com",
+    "added_at": "2026-08-28T15:00:00",
+    "added_by": "System"
+  },
+  {
+    "email": "new.recipient@bank.com",
+    "added_at": "2026-08-28T16:37:18",
+    "added_by": "admin@bank.com"
+  },
+  {
+    "email": "another.officer@bank.com",
+    "added_at": "2026-08-28T16:39:33",
+    "added_by": "admin@bank.com"
+  },
+  {
+    "email": "ali59.aa96@gmail.com",
+    "added_at": "2026-09-04T14:15:01",
+    "added_by": "admin@bank.com"
+  }
+]

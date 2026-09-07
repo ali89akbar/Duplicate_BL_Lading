@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { GET } from '../utils/api';
 import { StatusBadge, CurrentStatusBadge, fmtNum } from '../utils/formatters';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faExclamationTriangle, faInbox, faSearch, faSearchPlus } from '@fortawesome/free-solid-svg-icons';
+
 
 /* ─── helpers ─────────────────────────────────────────── */
 
@@ -133,7 +136,7 @@ export function SearchPage() {
         >
           {/* magnifier icon */}
           <span style={{ fontSize: '1.3rem', color: '#94a3b8', flexShrink: 0, paddingLeft: '0.25rem' }}>
-            🔍
+            <FontAwesomeIcon icon={faSearch} />
           </span>
           <input
             type="text"
@@ -201,7 +204,7 @@ export function SearchPage() {
       {/* ── Error ── */}
       {!loading && error && (
         <div className="card b-err" style={{ padding: '1rem 1.25rem', color: '#dc2626' }}>
-          ⚠️ {error}
+          <FontAwesomeIcon icon={faExclamationTriangle} />️ {error}
         </div>
       )}
 
@@ -212,7 +215,7 @@ export function SearchPage() {
           justifyContent: 'center', padding: '5rem 0', gap: '0.75rem',
           color: '#94a3b8', userSelect: 'none',
         }}>
-          <span style={{ fontSize: '3.5rem', lineHeight: 1 }}>🔎</span>
+          <span style={{ fontSize: '3.5rem', lineHeight: 1 }}><FontAwesomeIcon icon={faSearchPlus} /></span>
           <p style={{ fontSize: '1.1rem', fontWeight: 500, margin: 0 }}>Search across all records</p>
           <p style={{ fontSize: '0.85rem', margin: 0 }}>Type a BL number, portal ref, or product name to begin</p>
         </div>
@@ -225,7 +228,7 @@ export function SearchPage() {
           justifyContent: 'center', padding: '4rem 0', gap: '0.75rem',
           color: '#94a3b8', userSelect: 'none',
         }}>
-          <span style={{ fontSize: '3.5rem', lineHeight: 1 }}>📭</span>
+          <span style={{ fontSize: '3.5rem', lineHeight: 1 }}><FontAwesomeIcon icon={faInbox} /></span>
           <p style={{ fontSize: '1.05rem', fontWeight: 500, margin: 0 }}>No results found</p>
           <p style={{ fontSize: '0.85rem', margin: 0 }}>
             {activeFilter !== 'all'

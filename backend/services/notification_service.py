@@ -7,8 +7,7 @@ from datetime import datetime
 import uuid
 from db import SessionLocal
 from models import Notification
-
-RECIPIENTS = ["remittance.supervisor@bank.com", "compliance@bank.com"]
+import services.email_service as email_svc
 
 def _add(ntype, severity, message, doc_id, subject, body):
     db = SessionLocal()
@@ -26,8 +25,11 @@ def _add(ntype, severity, message, doc_id, subject, body):
         db.add(new_notif)
         db.commit()
         print(f"\n  📧 [{ntype}] {subject}")
+        
+        # Dispatch SMTP email alert
+        email_svc.send_email_async(subject, body)
     except Exception as e:
-        print("Failed to save notification:", e)
+        print("Failed to save/dispatch notification:", e)
     finally:
         db.close()
 
@@ -38,6 +40,8 @@ def send_duplicate_alert(doc_id, doc_type, dup_info, uploaded_by="system"):
     matched  = ", ".join(dup_info.get("matched_on", []))
     message  = dup_info.get("message", "Duplicate document detected.")
     subject  = f"[{severity}] DUPLICATE ALERT — {doc_type.upper()} | {doc_id}"
+    
+    recipients = [r["email"] for r in email_svc.get_recipients() if r.get("email")]
     body = (
         f"DUPLICATE DETECTION ALERT  |  {datetime.now():%Y-%m-%d %H:%M:%S}\n"
         f"{'─'*55}\n"
@@ -50,7 +54,7 @@ def send_duplicate_alert(doc_id, doc_type, dup_info, uploaded_by="system"):
         f"Original   : {dup_info.get('original_doc_id', 'N/A')}\n"
         f"{'─'*55}\n"
         f"ACTION: Document BLOCKED. Supervisor review required.\n"
-        f"Recipients : {', '.join(RECIPIENTS)}"
+        f"Recipients : {', '.join(recipients)}"
     )
     _add("DUPLICATE_ALERT", severity, message, doc_id, subject, body)
 
@@ -69,7 +73,7 @@ def send_ocr_failure(doc_id, filename, error, low_fields):
 
 def send_pattern_alert(bene, freight, count, invoices):
     subject = f"[HIGH RISK] Pattern Alert — {bene} + {freight}"
-    message = f"Pattern: {bene} + {freight} appear together {count}× (threshold {PATTERN_THRESHOLD})"
+    message = f"Pattern: {bene} + {freight} appear together {count}× (threshold 3)"
     body = (
         f"RISK PATTERN ALERT  |  {datetime.now():%Y-%m-%d %H:%M:%S}\n"
         f"Beneficiary  : {bene}\nFreight Co.  : {freight}\n"
@@ -77,9 +81,6 @@ def send_pattern_alert(bene, freight, count, invoices):
         f"ACTION: Escalate to Compliance Officer. STR may be required."
     )
     _add("PATTERN_ALERT", "HIGH", message, None, subject, body)
-
-
-PATTERN_THRESHOLD = 3
 
 
 def send_revalidate_alert(doc_id: str, doc_type: str, reval_info: dict, submitted_by: str = "system"):
@@ -90,6 +91,8 @@ def send_revalidate_alert(doc_id: str, doc_type: str, reval_info: dict, submitte
     orig_date   = reval_info.get("extra", {}).get("original_date", "N/A")
     message     = reval_info.get("message", "Revalidate condition detected.")
     subject     = f"[REVALIDATE] REFERENCE REUSE ALERT — {doc_type.upper()} | {doc_id}"
+    
+    recipients = [r["email"] for r in email_svc.get_recipients() if r.get("email")]
     body = (
         f"REVALIDATE STATUS ALERT  |  {datetime.now():%Y-%m-%d %H:%M:%S}\n"
         f"{'─'*60}\n"
@@ -108,6 +111,6 @@ def send_revalidate_alert(doc_id: str, doc_type: str, reval_info: dict, submitte
         f"  • Verify this is a legitimate amendment/re-shipment/correction\n"
         f"  • Document the reason for reference reuse before final approval\n"
         f"{'─'*60}\n"
-        f"Recipients: {', '.join(RECIPIENTS)}"
+        f"Recipients: {', '.join(recipients)}"
     )
     _add("REVALIDATE_ALERT", "MEDIUM", message, doc_id, subject, body)

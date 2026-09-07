@@ -2,43 +2,62 @@ import React, { useState, useEffect } from 'react';
 import { GET } from '../utils/api';
 import { StatCard, DataTable } from '../components/UIComponents';
 import { StatusBadge, CurrentStatusBadge, MethBadge, ProgressRow, fmtNum } from '../utils/formatters';
-import { PendingApprovalsPanel } from './PendingApprovalsPanel';
-import { HoldCasesPanel } from './HoldCasesPanel';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faStar } from '@fortawesome/free-solid-svg-icons';
+
 
 
 export function DashboardPage({ user }) {
   const [metrics, setMetrics] = useState(null);
   const [recent, setRecent] = useState([]);
   const [dupStats, setDupStats] = useState(null);
-  const [tat, setTat] = useState(null);
+  const [tat, setTat] = useState([]);
   const isAdmin = user?.role === 'admin';
   const isAdminOrSupervisor = user?.role === 'admin' || user?.role === 'supervisor';
 
   useEffect(() => {
     async function loadData() {
-      const [mRes, rRes, dRes] = await Promise.all([
-        GET('/dashboard/metrics'),
-        GET('/dashboard/recent?limit=10'),
-        GET('/duplicates/stats')
-      ]);
-      if (mRes) setMetrics(mRes);
-      if (rRes?.recent) setRecent(rRes.recent);
-      if (dRes) setDupStats(dRes);
+      const mRes = await GET('/dashboard/metrics');
+      if (mRes) {
+        setMetrics(mRes);
+        if (mRes.dup_stats) setDupStats(mRes.dup_stats);
 
-      if (isAdmin) {
-        const tatRes = await GET('/admin/tat');
-        if (tatRes?.tat) setTat(tatRes.tat);
+        // Recent Scans logic with fallback
+        if (Array.isArray(mRes.recent) && mRes.recent.length > 0) {
+          setRecent(mRes.recent);
+        } else {
+          const recRes = await GET('/dashboard/recent?limit=10');
+          if (Array.isArray(recRes?.recent)) setRecent(recRes.recent);
+        }
+
+        // Employee TAT logic with multi-tier fallback
+        if (Array.isArray(mRes.tat) && mRes.tat.length > 0) {
+          setTat(mRes.tat);
+        } else {
+          const tatRes = await GET('/admin/tat');
+          if (Array.isArray(tatRes?.tat) && tatRes.tat.length > 0) {
+            setTat(tatRes.tat);
+          } else {
+            const detailRes = await GET('/admin/tat/detail');
+            if (detailRes?.detail) {
+              const list = Object.entries(detailRes.detail).map(([email, dates]) => {
+                const count = Object.values(dates).reduce((sum, recs) => sum + recs.length, 0);
+                return { email, count };
+              });
+              list.sort((a, b) => b.count - a.count);
+              setTat(list);
+            }
+          }
+        }
       }
     }
     loadData();
-  }, [isAdmin]);
+  }, []);
 
   if (!metrics) return <div style={{ padding: '20px' }}>Loading dashboard...</div>;
 
   return (
     <>
-      {isAdminOrSupervisor && <PendingApprovalsPanel />}
-      <HoldCasesPanel />
       <div className="stats" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
         <StatCard label="Total Scanned" value={metrics.total_documents} colorClass="bl" />
         <StatCard label="Duplicates" value={metrics.total_duplicates} colorClass="rd" />
@@ -47,21 +66,7 @@ export function DashboardPage({ user }) {
         <StatCard label="Pending/Expired" value={`${metrics.expired_count || 0} / ${metrics.pending_count || 0}`} colorClass="pu" />
       </div>
 
-      <div className="g2 mb20">
-        <div className="card">
-          <div className="card-hd"><div className="card-t">Detection Methods</div></div>
-          <div className="card-b">
-            {dupStats ? (
-              <>
-                <ProgressRow label="Exact" n={dupStats.exact} total={dupStats.total} color="var(--red)" />
-                <ProgressRow label="Fuzzy" n={dupStats.fuzzy} total={dupStats.total} color="var(--amber)" />
-                <ProgressRow label="Revalidate" n={dupStats.revalidate} total={dupStats.total} color="#d97706" />
-                <ProgressRow label="Velocity/Pattern" n={(dupStats.amount_velocity || 0) + (dupStats.pattern || 0)} total={dupStats.total} color="var(--teal)" />
-              </>
-            ) : <span style={{ color: 'var(--txt3)' }}>Loading...</span>}
-          </div>
-        </div>
-
+      <div className="mb20">
         <div className="card">
           <div className="card-hd"><div className="card-t">3-Day Status Summary</div></div>
           <div className="card-b">
@@ -80,11 +85,11 @@ export function DashboardPage({ user }) {
           </div>
         </div>
 
-        {isAdmin && (
+        {isAdminOrSupervisor && (
           <div className="card" style={{ gridColumn: '1 / -1' }}>
             <div className="card-hd"><div className="card-t">Employee TAT (Records Submitted)</div></div>
             <div className="card-b" style={{ padding: 0 }}>
-              {tat ? (
+              {tat.length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ background: 'var(--bg)', borderBottom: '1px solid var(--bdr)' }}>
@@ -101,7 +106,7 @@ export function DashboardPage({ user }) {
                     ))}
                   </tbody>
                 </table>
-              ) : <div style={{ padding: '15px' }}><span style={{ color: 'var(--txt3)' }}>Loading TAT...</span></div>}
+              ) : <div style={{ padding: '15px' }}><span style={{ color: 'var(--txt3)' }}>No TAT data available.</span></div>}
             </div>
           </div>
         )}
@@ -117,7 +122,7 @@ export function DashboardPage({ user }) {
               <td><code style={{ fontSize: '11px', background: 'var(--bg)', padding: '2px 5px', borderRadius: '4px' }}>{d.id}</code></td>
               <td>{d.product || '—'}</td>
               <td className="mono" style={{ fontSize: '11.5px' }}>{d.bl_number || '—'}</td>
-              <td style={{ textAlign: 'center' }}>{d.is_master ? <span style={{ fontSize: '13px', color: '#d97706' }}>★</span> : '—'}</td>
+              <td style={{ textAlign: 'center' }}>{d.is_master ? <span style={{ fontSize: '13px', color: '#d97706' }}><FontAwesomeIcon icon={faStar} /></span> : '—'}</td>
               <td className="mono" style={{ fontSize: '11px', color: '#b45309' }}>{d.portal_ref_no || '—'}</td>
               <td className="mono" style={{ fontSize: '11px' }}>{d.screening_date || '—'}</td>
               <td className="mono" style={{ fontSize: '11px' }}>{d.dr_ccy || ''} {fmtNum(d.amount)}</td>

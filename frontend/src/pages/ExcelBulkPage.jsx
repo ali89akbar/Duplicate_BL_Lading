@@ -3,6 +3,9 @@ import { POST } from '../utils/api';
 import { parseExcelFile } from '../utils/excel';
 import { DataTable, Spinner, StatCard } from '../components/UIComponents';
 import { StatusBadge, CurrentStatusBadge, MethBadge } from '../utils/formatters';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faPaperclip, faExclamationTriangle, faCheck, faBan, faFolder } from '@fortawesome/free-solid-svg-icons';
+
 
 export function ExcelBulkPage({ user }) {
   const [file, setFile] = useState(null);
@@ -71,14 +74,14 @@ export function ExcelBulkPage({ user }) {
         <div className="card-b">
           <div className="drop" onDragOver={e => e.preventDefault()} onDrop={onDrop}>
             <input type="file" accept=".xlsx,.xls,.csv" onChange={e => e.target.files[0] && handleFile(e.target.files[0])} />
-            <div style={{ fontSize: '32px', marginBottom: '8px' }}>📁</div>
+            <div style={{ fontSize: '32px', marginBottom: '8px' }}><FontAwesomeIcon icon={faFolder} /></div>
             <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--txt2)', marginBottom: '4px' }}>Drag & Drop Excel File Here</div>
             <div style={{ fontSize: '12.5px', color: 'var(--txt3)' }}>or click to browse</div>
           </div>
           
           <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg)', padding: '12px 18px', borderRadius: 'var(--r)', border: '1px solid var(--bdr)' }}>
             <div style={{ fontSize: '13px', fontWeight: 500 }}>
-              {file ? `📎 ${file.name} — ${parsedRows.length} rows loaded, ready to process` : 'No file selected'}
+              {file ? <><FontAwesomeIcon icon={faPaperclip} /> {file.name} — {parsedRows.length} rows loaded, ready to process</> : 'No file selected'}
             </div>
             <button className="btn btn-p" onClick={submit} disabled={!parsedRows.length || loading}>
               {loading ? <Spinner /> : 'Process File'}
@@ -91,9 +94,9 @@ export function ExcelBulkPage({ user }) {
         <div style={{ marginTop: '22px' }}>
           <div className="stats" style={{ gridTemplateColumns: 'repeat(6, 1fr)', marginBottom: '14px' }}>
             <StatCard label="Total" value={results.total} colorClass="bl" />
-            <StatCard label="✓ Unique" value={results.unique} colorClass="gn" />
-            <StatCard label="⛔ Dup" value={results.duplicates} colorClass="rd" />
-            <StatCard label="⚠ Reval" value={results.revalidates} colorClass="am" />
+            <StatCard label="<FontAwesomeIcon icon={faCheck} /> Unique" value={results.unique} colorClass="gn" />
+            <StatCard label="<FontAwesomeIcon icon={faBan} /> Dup" value={results.duplicates} colorClass="rd" />
+            <StatCard label="<FontAwesomeIcon icon={faExclamationTriangle} /> Reval" value={results.revalidates} colorClass="am" />
             <StatCard label="! Errors" value={results.errors} colorClass="tl" />
             <StatCard label="Skipped" value={results.skipped} colorClass="pu" />
           </div>
@@ -101,9 +104,9 @@ export function ExcelBulkPage({ user }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <div className="pills">
               <div className={`pill ${filter === 'all' ? 'on' : ''}`} onClick={() => setFilter('all')}>All</div>
-              <div className={`pill ${filter === 'validated' ? 'on' : ''}`} onClick={() => setFilter('validated')}>✓ Unique</div>
-              <div className={`pill ${filter === 'duplicate_blocked' ? 'on' : ''}`} onClick={() => setFilter('duplicate_blocked')}>⛔ Dup</div>
-              <div className={`pill ${filter === 'revalidate' ? 'on' : ''}`} onClick={() => setFilter('revalidate')}>⚠ Reval</div>
+              <div className={`pill ${filter === 'validated' ? 'on' : ''}`} onClick={() => setFilter('validated')}><FontAwesomeIcon icon={faCheck} /> Unique</div>
+              <div className={`pill ${filter === 'duplicate_blocked' ? 'on' : ''}`} onClick={() => setFilter('duplicate_blocked')}><FontAwesomeIcon icon={faBan} /> Dup</div>
+              <div className={`pill ${filter === 'revalidate' ? 'on' : ''}`} onClick={() => setFilter('revalidate')}><FontAwesomeIcon icon={faExclamationTriangle} /> Reval</div>
               <div className={`pill ${filter === 'validation_error' ? 'on' : ''}`} onClick={() => setFilter('validation_error')}>! Error</div>
             </div>
             <button className="btn btn-g btn-sm" onClick={exportCSV}>Export CSV</button>
@@ -127,7 +130,7 @@ export function ExcelBulkPage({ user }) {
                     <td>{dd.duplicate_type ? <MethBadge m={dd.duplicate_type} /> : '—'}</td>
                     <td className="mono" style={{ fontSize: '11px' }}>{r.till_date || '—'}</td>
                     <td><CurrentStatusBadge cs={r.current_status || 'pending'} /></td>
-                    <td>{r.email_alert_sent ? <span className="badge b-warn" style={{ fontSize: '9.5px' }}>Sent ✓</span> : <span style={{ color: 'var(--txt3)', fontSize: '11px' }}>—</span>}</td>
+                    <td>{r.email_alert_sent ? <span className="badge b-warn" style={{ fontSize: '9.5px' }}>Sent <FontAwesomeIcon icon={faCheck} /></span> : <span style={{ color: 'var(--txt3)', fontSize: '11px' }}>—</span>}</td>
                     <td>{sid ? <span style={{ fontSize: '10.5px', color: 'var(--txt3)' }}>Edit (TBD)</span> : '—'}</td>
                   </tr>
                 );

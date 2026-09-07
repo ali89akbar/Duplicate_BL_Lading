@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { GET } from '../utils/api';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faInbox } from '@fortawesome/free-solid-svg-icons';
+
 
 const PAGE_SIZE = 20;
 
@@ -50,8 +53,8 @@ export function AuditLogPage() {
     setError(null);
     GET('/reports/audit-log?limit=100')
       .then((data) => {
-        setLogs(data.logs || []);
-        setTotal(data.total ?? 0);
+        setLogs(data?.logs || []);
+        setTotal(data?.total ?? 0);
       })
       .catch((err) => setError(err?.message || 'Failed to load audit log'))
       .finally(() => setLoading(false));
@@ -178,7 +181,7 @@ export function AuditLogPage() {
 
         {!loading && !error && filtered.length === 0 && (
           <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted, #888)' }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>📭</div>
+            <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}><FontAwesomeIcon icon={faInbox} /></div>
             <div style={{ fontWeight: 600 }}>No audit entries found</div>
             <div style={{ fontSize: '0.875rem', marginTop: '0.25rem' }}>
               Try adjusting your filters or search query.
